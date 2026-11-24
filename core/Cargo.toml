@@ -1,0 +1,21 @@
+[package]
+name = "ide_core"
+version = "0.1.0"
+edition = "2021"
+description = "Dev-IDE native core: text buffer, workspace and file operations exposed to Kotlin via UniFFI"
+
+[lib]
+crate-type = ["cdylib", "lib"]
+name = "ide_core"
+
+[[bin]]
+name = "uniffi-bindgen"
+path = "src/bin/uniffi-bindgen.rs"
+
+[dependencies]
+ropey = "1.6"
+thiserror = "2"
+uniffi = { version = "0.29", features = ["cli"] }
+
+[dev-dependencies]
+tempfile = "3"
