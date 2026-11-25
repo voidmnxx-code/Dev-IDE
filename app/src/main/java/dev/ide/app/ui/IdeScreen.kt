@@ -203,6 +203,6 @@ private fun EditorArea(
                 vertical = false,
             )
         }
-        FloatingActions(vm, typing, widthPx)
+        FloatingActions(vm, typing, widthPx, with(LocalDensity.current) { maxHeight.toPx() })
     }
 }

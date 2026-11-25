@@ -51,13 +51,21 @@ private val FabSize = 48.dp
  */
 @OptIn(ExperimentalFoundationApi::class)
 @Composable
-fun BoxScope.FloatingActions(vm: IdeViewModel, typing: Boolean, containerWidthPx: Float) {
+fun BoxScope.FloatingActions(vm: IdeViewModel, typing: Boolean, containerWidthPx: Float, containerHeightPx: Float) {
     // 0 = closed, 1 = layer 1, 2 = layer 2
     var layer by remember { mutableIntStateOf(0) }
     // Offset relative to the bottom-right anchor (<= 0 means moved left/up).
     var dx by remember { mutableFloatStateOf(0f) }
     var dy by remember { mutableFloatStateOf(0f) }
     val sizePx = with(androidx.compose.ui.platform.LocalDensity.current) { (FabSize + 16.dp).toPx() }
+    val maxUp = (containerHeightPx - sizePx).coerceAtLeast(0f)
+
+    // When the keyboard / cursor editor appears the editor shrinks: bring the
+    // button back to its default spot (bottom edge) so it never leaves the screen.
+    androidx.compose.runtime.LaunchedEffect(typing) { if (typing) dy = 0f }
+    // Also keep it inside the area if the container shrinks for any other reason.
+    androidx.compose.runtime.LaunchedEffect(maxUp) { if (-dy > maxUp) dy = -maxUp }
+
     val onLeft = dx < -(containerWidthPx - sizePx) / 2f
 
     if (layer != 0) {
@@ -96,7 +104,7 @@ fun BoxScope.FloatingActions(vm: IdeViewModel, typing: Boolean, containerWidthPx
                     ) { change, drag ->
                         change.consume()
                         dx = (dx + drag.x).coerceIn(-(containerWidthPx - sizePx), 0f)
-                        dy = (dy + drag.y).coerceAtMost(0f)
+                        dy = (dy + drag.y).coerceIn(-maxUp, 0f)
                     }
                 }
                 .combinedClickable(
