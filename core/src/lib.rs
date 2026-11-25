@@ -2,9 +2,16 @@
 //! `Workspace` object below via UniFFI (no hand-written JNI).
 
 mod editor;
+mod git;
+mod highlight;
+mod pkg;
 mod project;
+mod screen;
+mod terminal;
 
 use editor::{Buffer, Move};
+pub use git::{ChangeKind, CommitInfo, GitChange};
+pub use highlight::{TokenKind, TokenSpan};
 use std::path::PathBuf;
 use std::sync::Mutex;
 
@@ -20,6 +27,12 @@ pub enum IdeError {
     NoSuchTab(u32),
     #[error("already exists: {0}")]
     AlreadyExists(String),
+    #[error("terminal error: {0}")]
+    Terminal(String),
+    #[error("git: {0}")]
+    Git(String),
+    #[error("package: {0}")]
+    Package(String),
 }
 
 impl From<std::io::Error> for IdeError {
@@ -333,6 +346,19 @@ impl Workspace {
         })
     }
 
+    // ---- highlighting --------------------------------------------------
+
+    /// Syntax spans for the tab (empty when the file type has no grammar).
+    pub fn highlight(&self, tab: u32) -> Result<Vec<TokenSpan>, IdeError> {
+        let mut st = self.state.lock().unwrap();
+        let t = st.tabs.get_mut(tab as usize).ok_or(IdeError::NoSuchTab(tab))?;
+        let name = t.path.rsplit('/').next().unwrap_or(&t.path).to_string();
+        Ok(match highlight::language_for(&name) {
+            Some(lang) => highlight::highlight(lang, &t.buffer.text()),
+            None => Vec::new(),
+        })
+    }
+
     // ---- search --------------------------------------------------------
 
     /// Returns match ranges as flat [start0, end0, start1, end1, ...] char offsets.
@@ -353,6 +379,234 @@ impl Workspace {
         case_sensitive: bool,
     ) -> Result<u32, IdeError> {
         self.with_tab(tab, |b| b.replace_all(&needle, &with, case_sensitive) as u32)
+    }
+}
+
+// ---- packages -------------------------------------------------------------
+
+#[derive(uniffi::Record, Clone, Debug)]
+pub struct PackageInfo {
+    pub id: String,
+    pub name: String,
+    pub version: String,
+    pub description: String,
+    pub url: String,
+    pub size: u64,
+    pub installed: bool,
+    pub installed_version: Option<String>,
+    /// The archive is already on disk, so (re)installing works offline.
+    pub cached: bool,
+}
+
+/// Language/tool packages stored under `root` (app-private storage).
+#[derive(uniffi::Object)]
+pub struct PackageManager {
+    store: pkg::Store,
+}
+
+#[uniffi::export]
+impl PackageManager {
+    #[uniffi::constructor]
+    pub fn new(root: String) -> Result<Self, IdeError> {
+        Ok(PackageManager { store: pkg::Store::new(std::path::Path::new(&root))? })
+    }
+
+    /// Replace the catalog (validated first). Returns the number of packages.
+    pub fn set_catalog(&self, json: String) -> Result<u32, IdeError> {
+        Ok(self.store.save_catalog(&json)? as u32)
+    }
+
+    pub fn packages(&self) -> Result<Vec<PackageInfo>, IdeError> {
+        let installed = self.store.installed();
+        Ok(self
+            .store
+            .load_catalog()?
+            .into_iter()
+            .map(|e| {
+                let inst = installed.iter().find(|i| i.id == e.id);
+                PackageInfo {
+                    cached: self.store.archive_path(&e).exists(),
+                    installed: inst.is_some(),
+                    installed_version: inst.map(|i| i.version.clone()),
+                    id: e.id,
+                    name: e.name,
+                    version: e.version,
+                    description: e.description,
+                    url: e.url,
+                    size: e.size,
+                }
+            })
+            .collect())
+    }
+
+    pub fn download_url(&self, id: String) -> Result<String, IdeError> {
+        Ok(self.store.find(&id)?.url)
+    }
+
+    /// Where the platform layer should save the downloaded archive.
+    pub fn archive_path(&self, id: String) -> Result<String, IdeError> {
+        Ok(self.store.archive_path(&self.store.find(&id)?).to_string_lossy().into_owned())
+    }
+
+    pub fn install(&self, id: String) -> Result<(), IdeError> {
+        self.store.install(&id)
+    }
+
+    pub fn uninstall(&self, id: String) -> Result<(), IdeError> {
+        self.store.uninstall(&id)
+    }
+
+    pub fn remove_cache(&self, id: String) -> Result<(), IdeError> {
+        self.store.remove_cache(&id)
+    }
+
+    /// Directories to prepend to PATH for every installed package.
+    pub fn path_dirs(&self) -> Vec<String> {
+        self.store.path_dirs()
+    }
+
+    /// Extra "KEY=VALUE" environment entries from installed packages.
+    pub fn extra_env(&self) -> Vec<String> {
+        self.store.extra_env()
+    }
+}
+
+// ---- git ------------------------------------------------------------------
+
+/// Git for one project directory. `git_bin` is the path of the git executable
+/// (installed through the package manager); reads use gitoxide and do not need it.
+#[derive(uniffi::Object)]
+pub struct Repo {
+    dir: PathBuf,
+    git_bin: String,
+}
+
+impl Repo {
+    fn cli(&self, token: Option<String>) -> git::Git {
+        git::Git { dir: self.dir.clone(), bin: self.git_bin.clone(), token }
+    }
+}
+
+#[uniffi::export]
+impl Repo {
+    #[uniffi::constructor]
+    pub fn new(dir: String, git_bin: String) -> Self {
+        Repo { dir: PathBuf::from(dir), git_bin }
+    }
+
+    pub fn is_repo(&self) -> bool {
+        git::is_repo(&self.dir)
+    }
+    pub fn init(&self) -> Result<(), IdeError> {
+        self.cli(None).init()
+    }
+    pub fn branch(&self) -> Result<Option<String>, IdeError> {
+        git::branch(&self.dir)
+    }
+    pub fn status(&self) -> Result<Vec<GitChange>, IdeError> {
+        git::status(&self.dir)
+    }
+    pub fn log(&self, limit: u32) -> Result<Vec<CommitInfo>, IdeError> {
+        git::log(&self.dir, limit as usize)
+    }
+    pub fn stage(&self, paths: Vec<String>) -> Result<(), IdeError> {
+        self.cli(None).stage(&paths)
+    }
+    pub fn stage_all(&self) -> Result<(), IdeError> {
+        self.cli(None).stage_all()
+    }
+    pub fn unstage(&self, paths: Vec<String>) -> Result<(), IdeError> {
+        self.cli(None).unstage(&paths)
+    }
+    pub fn commit(&self, message: String, name: String, email: String) -> Result<String, IdeError> {
+        self.cli(None).commit(&message, &name, &email)
+    }
+    pub fn push(&self, token: String) -> Result<String, IdeError> {
+        self.cli(Some(token)).push()
+    }
+    pub fn pull(&self, token: String) -> Result<String, IdeError> {
+        self.cli(Some(token)).pull()
+    }
+    pub fn checkout(&self, branch: String, create: bool) -> Result<(), IdeError> {
+        self.cli(None).checkout(&branch, create)
+    }
+    pub fn add_remote(&self, url: String) -> Result<(), IdeError> {
+        self.cli(None).add_remote(&url)
+    }
+    pub fn diff(&self, path: String, staged: bool) -> Result<String, IdeError> {
+        self.cli(None).diff(&path, staged)
+    }
+}
+
+/// Clone `url` into `dest` (created). Used for "Clone repository".
+#[uniffi::export]
+pub fn clone_repository(url: String, dest: String, git_bin: String, token: String) -> Result<(), IdeError> {
+    git::clone_repo(&url, std::path::Path::new(&dest), &git_bin, Some(token))
+}
+
+// ---- terminal -----------------------------------------------------------
+
+#[derive(uniffi::Record, Clone, Debug)]
+pub struct TermCursor {
+    pub line: u32,
+    pub col: u32,
+}
+
+/// A real pseudo-terminal running a shell. `env` entries are "KEY=VALUE".
+#[derive(uniffi::Object)]
+pub struct Terminal {
+    session: terminal::Session,
+}
+
+#[uniffi::export]
+impl Terminal {
+    #[uniffi::constructor]
+    pub fn new(
+        program: String,
+        args: Vec<String>,
+        cwd: String,
+        env: Vec<String>,
+        cols: u32,
+        rows: u32,
+    ) -> Result<Self, IdeError> {
+        let env: Vec<(String, String)> = env
+            .iter()
+            .filter_map(|e| e.split_once('=').map(|(k, v)| (k.to_string(), v.to_string())))
+            .collect();
+        let session = terminal::Session::spawn(&program, &args, &cwd, &env, cols as u16, rows as u16)
+            .map_err(IdeError::Terminal)?;
+        Ok(Terminal { session })
+    }
+
+    /// Raw input, e.g. "ls\r", "\u{3}" (Ctrl+C), "\u{1b}[A" (Up).
+    pub fn send(&self, data: String) -> Result<(), IdeError> {
+        self.session.write(data.as_bytes()).map_err(IdeError::Terminal)
+    }
+
+    pub fn resize(&self, cols: u32, rows: u32) -> Result<(), IdeError> {
+        self.session.resize(cols as u16, rows as u16).map_err(IdeError::Terminal)
+    }
+
+    /// Increases whenever output changes; poll this cheaply before calling `lines`.
+    pub fn version(&self) -> u64 {
+        self.session.version()
+    }
+
+    pub fn lines(&self) -> Vec<String> {
+        self.session.lines()
+    }
+
+    pub fn cursor(&self) -> TermCursor {
+        let (l, c) = self.session.cursor();
+        TermCursor { line: l as u32, col: c as u32 }
+    }
+
+    pub fn is_alive(&self) -> bool {
+        self.session.is_alive()
+    }
+
+    pub fn kill(&self) {
+        self.session.kill()
     }
 }
 
