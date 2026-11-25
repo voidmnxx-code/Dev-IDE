@@ -29,9 +29,10 @@ jobs:
       - name: Build debug APK (builds the Rust core + UniFFI bindings first)
         run: |
           # The runner's own NDK path; expression contexts can't read it.
-          export ANDROID_NDK_HOME="${ANDROID_NDK_LATEST_HOME:-$ANDROID_NDK_ROOT}"
+          export ANDROID_NDK_HOME="${ANDROID_NDK_ROOT:-$ANDROID_NDK_LATEST_HOME}"
+          test -d "$ANDROID_NDK_HOME" || { echo "NDK not found"; exit 1; }
           echo "Using NDK at $ANDROID_NDK_HOME"
-          ./gradlew assembleDebug
+          ./gradlew assembleDebug --stacktrace
       - uses: actions/upload-artifact@v4
         with:
           name: dev-ide-debug-apk
