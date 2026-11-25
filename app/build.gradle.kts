@@ -57,10 +57,30 @@ android {
     defaultConfig {
         applicationId = "dev.ide.app"
         minSdk = 26
-        targetSdk = 35 // Play requires API 35+; no targetSdk-28 tricks.
         versionCode = 1
         versionName = "0.1.0"
         ndk { abiFilters += "arm64-v8a" }
+    }
+
+    // Two distributions (see README):
+    //  store: targetSdk 35 for Google Play. Android forbids executing files from app
+    //         storage at this level, so the package manager is disabled.
+    //  full : targetSdk 28 for GitHub / F-Droid. Downloaded toolchains can run from
+    //         app storage (the approach Termux uses), enabling the package manager.
+    flavorDimensions += "dist"
+    productFlavors {
+        create("store") {
+            dimension = "dist"
+            targetSdk = 35
+            buildConfigField("boolean", "FULL", "false")
+        }
+        create("full") {
+            dimension = "dist"
+            targetSdk = 28
+            applicationIdSuffix = ".full"
+            versionNameSuffix = "-full"
+            buildConfigField("boolean", "FULL", "true")
+        }
     }
 
     buildTypes {
@@ -73,7 +93,10 @@ android {
         targetCompatibility = JavaVersion.VERSION_17
     }
     kotlinOptions { jvmTarget = "17" }
-    buildFeatures { compose = true }
+    buildFeatures {
+        compose = true
+        buildConfig = true
+    }
     packaging {
         jniLibs { useLegacyPackaging = true } // extractNativeLibs=true: tools can be exec'd later
     }

@@ -98,6 +98,8 @@ fun IdeScreen(vm: IdeViewModel) {
             IdeViewModel.Overlay.NewFile -> NewFileDialog(vm)
             IdeViewModel.Overlay.Customize -> CustomizeScreen(vm)
             IdeViewModel.Overlay.AutoFold -> AutoFoldScreen(vm)
+            IdeViewModel.Overlay.Git -> GitScreen(vm)
+            IdeViewModel.Overlay.Packages -> PackagesScreen(vm)
             else -> Unit
         }
 

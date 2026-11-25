@@ -67,22 +67,25 @@ private val codeKeys = listOf(
 )
 
 private fun terminalKeys(ctrl: Boolean) = listOf(
-    Key(if (ctrl) "Ctrl ●" else "Ctrl") { /* toggled by caller */ },
-    Key("Esc") { },
-    Key("Tab") { it.terminalInput += "\t" },
-    Key("↑") { }, Key("↓") { },
-    Key("|") { it.terminalInput += "|" },
-    Key("~") { it.terminalInput += "~" },
-    Key("/") { it.terminalInput += "/" },
-    Key("-") { it.terminalInput += "-" },
-    Key("Ctrl+C") { it.interrupt() },
+    Key(if (ctrl) "Ctrl ●" else "Ctrl") { it.ctrlActive = !it.ctrlActive },
+    Key("Esc") { it.termRaw("\u001b") },
+    Key("Tab") { it.termRaw("\t") },
+    Key("↑") { it.termRaw("\u001b[A") },
+    Key("↓") { it.termRaw("\u001b[B") },
+    Key("←") { it.termRaw("\u001b[D") },
+    Key("→") { it.termRaw("\u001b[C") },
+    Key("|") { it.termType("|") },
+    Key("~") { it.termType("~") },
+    Key("/") { it.termType("/") },
+    Key("-") { it.termType("-") },
+    Key("Ctrl+C") { it.termRaw("\u0003") },
 )
 
 /** Spec §7: 44dp row above the system keyboard; first key opens the cursor editor. */
 @OptIn(ExperimentalFoundationApi::class)
 @Composable
 fun ExtraKeysRow(vm: IdeViewModel, terminal: Boolean) {
-    val keys = if (terminal) terminalKeys(false) else codeKeys
+    val keys = if (terminal) terminalKeys(vm.ctrlActive) else codeKeys
     LazyRow(
         Modifier.fillMaxWidth().height(MinTouch).background(C.Bar),
         horizontalArrangement = Arrangement.spacedBy(4.dp),

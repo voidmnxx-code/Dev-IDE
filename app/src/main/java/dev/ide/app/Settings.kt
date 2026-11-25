@@ -10,7 +10,7 @@ enum class Action(val label: String) {
     Debug("Debug"), Files("Files"), Git("Git"), Replace("Replace"),
     GoToDefinition("Go to definition"), CommentLine("Comment line"),
     DuplicateLine("Duplicate line"), Format("Format"),
-    Save("Save"), Focus("Focus"), Redo("Redo"), Terminal("Terminal"),
+    Save("Save"), Focus("Focus"), Redo("Redo"), Terminal("Terminal"), Packages("Packages"),
 }
 
 /** All user-tweakable behaviour from the Auto-fold and Customize screens. */
@@ -41,6 +41,11 @@ class Settings(context: Context) {
         )
         set(v) = writeList("layer2", v)
 
+    var gitName by str("gitName", "")
+    var gitEmail by str("gitEmail", "")
+    var gitToken by str("gitToken", "")
+    var catalogUrl by str("catalogUrl", "")
+
     var longPressAction: Action
         get() = Action.valueOf(prefs.getString("longPress", Action.Run.name)!!)
         set(v) = prefs.edit().putString("longPress", v.name).apply()
@@ -50,6 +55,13 @@ class Settings(context: Context) {
             prefs.getBoolean(key, true) // everything on by default (spec §11)
         override fun setValue(thisRef: Any?, property: kotlin.reflect.KProperty<*>, value: Boolean) =
             prefs.edit().putBoolean(key, value).apply()
+    }
+
+    private fun str(key: String, default: String) = object : kotlin.properties.ReadWriteProperty<Any?, String> {
+        override fun getValue(thisRef: Any?, property: kotlin.reflect.KProperty<*>) =
+            prefs.getString(key, default) ?: default
+        override fun setValue(thisRef: Any?, property: kotlin.reflect.KProperty<*>, value: String) =
+            prefs.edit().putString(key, value).apply()
     }
 
     private fun readList(key: String, default: List<Action>): List<Action> {

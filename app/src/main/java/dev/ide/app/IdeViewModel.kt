@@ -8,17 +8,28 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
-import java.io.BufferedWriter
 import java.io.File
+import java.net.HttpURLConnection
+import java.net.URL
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
+import uniffi.ide_core.ChangeKind
+import uniffi.ide_core.CommitInfo
 import uniffi.ide_core.CursorInfo
 import uniffi.ide_core.CursorMove
+import uniffi.ide_core.GitChange
 import uniffi.ide_core.IdeException
+import uniffi.ide_core.PackageInfo
+import uniffi.ide_core.PackageManager
+import uniffi.ide_core.Repo
 import uniffi.ide_core.SelectUnit
 import uniffi.ide_core.TabInfo
+import uniffi.ide_core.TermCursor
+import uniffi.ide_core.Terminal
 import uniffi.ide_core.Workspace
 
 enum class OutputTab(val label: String) {
@@ -36,6 +47,7 @@ class IdeViewModel(app: Application) : AndroidViewModel(app) {
     val settings = Settings(app)
     private val root = File(app.filesDir, "projects/demo")
     private val ws: Workspace
+    private val pm = PackageManager(File(app.filesDir, "packages").absolutePath)
 
     /** Bumped after every buffer change so Compose re-reads text/cursor. */
     var version by mutableIntStateOf(0)
@@ -53,12 +65,35 @@ class IdeViewModel(app: Application) : AndroidViewModel(app) {
     var terminalFocused by mutableStateOf(false)
     var overlay by mutableStateOf<Overlay?>(null)
 
-    enum class Overlay { Files, Find, Customize, AutoFold, NewFile }
+    enum class Overlay { Files, Find, Customize, AutoFold, NewFile, Git, Packages }
 
     // ---- output -------------------------------------------------------
     val output = mutableStateListOf<OutLine>()
-    val terminal = mutableStateListOf<OutLine>()
-    var terminalInput by mutableStateOf("")
+
+    // ---- real terminal (PTY) --------------------------------------------
+    var termLines by mutableStateOf(listOf(""))
+    var termCursor by mutableStateOf<TermCursor?>(null)
+    var termAlive by mutableStateOf(true)
+    var ctrlActive by mutableStateOf(false)
+    private var term: Terminal? = null
+    private var termVersion: ULong = ULong.MAX_VALUE
+    private var termJob: Job? = null
+
+    // ---- git ----------------------------------------------------------------
+    var gitIsRepo by mutableStateOf(false)
+    var gitBranch by mutableStateOf<String?>(null)
+    var gitChanges by mutableStateOf<List<GitChange>>(emptyList())
+    var gitCommits by mutableStateOf<List<CommitInfo>>(emptyList())
+    var gitBusy by mutableStateOf(false)
+    var gitOutput by mutableStateOf("")
+    var commitMessage by mutableStateOf("")
+    var remoteUrl by mutableStateOf("")
+
+    // ---- packages -----------------------------------------------------------
+    var packages by mutableStateOf<List<PackageInfo>>(emptyList())
+    var pkgBusy by mutableStateOf<String?>(null) // id being downloaded/installed
+    var pkgProgress by mutableStateOf(0f)
+    var pkgStatus by mutableStateOf("")
     var lastRunFailed by mutableStateOf(false)
     var message by mutableStateOf<String?>(null)
 
@@ -72,8 +107,6 @@ class IdeViewModel(app: Application) : AndroidViewModel(app) {
 
     private var autosaveJob: Job? = null
     private var runProcess: Process? = null
-    private var shell: Process? = null
-    private var shellIn: BufferedWriter? = null
 
     init {
         ws = Workspace(root.absolutePath)
@@ -138,6 +171,9 @@ class IdeViewModel(app: Application) : AndroidViewModel(app) {
     fun duplicateLine() = edit { ws.duplicateLine(it) }
     fun toggleComment() = edit { ws.toggleComment(it, commentPrefix()) }
     fun cut(): String { var s = ""; edit { s = ws.cut(it) }; return s }
+    fun highlight(): List<uniffi.ide_core.TokenSpan> =
+        if (hasTab) try { ws.highlight(activeTab.toUInt()) } catch (_: IdeException) { emptyList() } else emptyList()
+
     fun selectedText(): String = if (hasTab) ws.selectedText(activeTab.toUInt()) else ""
 
     fun setCursor(offset: Int) = guardTab { ws.setCursor(it, offset.toUInt(), false) }
@@ -222,7 +258,9 @@ class IdeViewModel(app: Application) : AndroidViewModel(app) {
         output += OutLine("$ ${cmd.joinToString(" ")}", LineKind.Command)
         viewModelScope.launch(Dispatchers.IO) {
             try {
-                val p = ProcessBuilder(cmd).directory(root).redirectErrorStream(true).start()
+                val pb = ProcessBuilder(cmd).directory(root).redirectErrorStream(true)
+                applyToolEnv(pb.environment())
+                val p = pb.start()
                 runProcess = p
                 p.inputStream.bufferedReader().forEachLine { l ->
                     val kind = if (l.startsWith("Error") || l.contains("Exception")) LineKind.Error else LineKind.Ok
@@ -241,29 +279,199 @@ class IdeViewModel(app: Application) : AndroidViewModel(app) {
         }
     }
 
-    fun terminalSend(line: String) {
-        viewModelScope.launch(Dispatchers.IO) {
-            try {
-                if (shell?.isAlive != true) {
-                    val p = ProcessBuilder("/system/bin/sh").directory(root).redirectErrorStream(true).start()
-                    shell = p
-                    shellIn = p.outputStream.bufferedWriter()
-                    viewModelScope.launch(Dispatchers.IO) {
-                        p.inputStream.bufferedReader().forEachLine { terminal += OutLine(it, LineKind.Ok) }
-                    }
+    // ---- toolchain environment ------------------------------------------------
+    private fun toolPath(): String =
+        (pm.pathDirs() + (System.getenv("PATH") ?: "/system/bin:/system/xbin")).joinToString(":")
+
+    private fun applyToolEnv(env: MutableMap<String, String>) {
+        env["PATH"] = toolPath()
+        env["HOME"] = root.parentFile?.absolutePath ?: root.absolutePath
+        pm.extraEnv().forEach { kv -> kv.split("=", limit = 2).takeIf { it.size == 2 }?.let { env[it[0]] = it[1] } }
+    }
+
+    // ---- terminal ---------------------------------------------------------------
+    fun ensureTerminal(cols: Int, rows: Int) {
+        if (term?.isAlive() == true) return
+        try {
+            val env = buildList {
+                add("TERM=xterm"); add("LANG=en_US.UTF-8")
+                add("HOME=${root.parentFile?.absolutePath ?: root.absolutePath}")
+                add("PATH=${toolPath()}")
+                addAll(pm.extraEnv())
+            }
+            term = Terminal("/system/bin/sh", emptyList(), root.absolutePath, env,
+                cols.coerceAtLeast(20).toUInt(), rows.coerceAtLeast(5).toUInt())
+            termVersion = ULong.MAX_VALUE
+            termAlive = true
+            startTermPolling()
+        } catch (e: IdeException) {
+            message = "Cannot start terminal: ${err(e)}"
+        }
+    }
+
+    private fun startTermPolling() {
+        termJob?.cancel()
+        termJob = viewModelScope.launch(Dispatchers.IO) {
+            while (isActive) {
+                val t = term ?: break
+                val v = t.version()
+                if (v != termVersion) {
+                    termVersion = v
+                    termLines = t.lines()
+                    termCursor = t.cursor()
+                    termAlive = t.isAlive()
                 }
-                terminal += OutLine("~/${root.name} $ $line", LineKind.Command)
-                shellIn?.apply { write(line + "\n"); flush() }
-            } catch (e: java.io.IOException) {
-                terminal += OutLine("Error: cannot start shell: ${e.message}", LineKind.Error)
+                delay(60)
             }
         }
     }
 
-    fun interrupt() {
-        shell?.destroy(); shell = null
-        runProcess?.destroy()
-        terminal += OutLine("^C", LineKind.Info)
+    fun terminalResize(cols: Int, rows: Int) {
+        try { term?.resize(cols.coerceAtLeast(20).toUInt(), rows.coerceAtLeast(5).toUInt()) } catch (_: IdeException) {}
+    }
+
+    /** Keys typed on the system keyboard; Ctrl (sticky) turns a letter into a control code. */
+    fun termType(s: String) {
+        val out = if (ctrlActive && s.length == 1) ctrlCode(s[0]) else s
+        ctrlActive = false
+        termRaw(out)
+    }
+
+    fun termRaw(s: String) {
+        try { term?.send(s) } catch (e: IdeException) { message = err(e) }
+    }
+
+    private fun ctrlCode(c: Char): String {
+        val l = c.lowercaseChar()
+        return if (l in 'a'..'z') (l.code - 96).toChar().toString() else c.toString()
+    }
+
+    fun interrupt() { runProcess?.destroy(); termRaw("\u0003") }
+
+    fun restartTerminal(cols: Int, rows: Int) {
+        term?.kill(); term = null
+        termLines = listOf("")
+        ensureTerminal(cols, rows)
+    }
+
+    // ---- git ----------------------------------------------------------------------
+    private fun gitBin(): String =
+        pm.pathDirs().map { File(it, "git") }.firstOrNull { it.canExecute() }?.absolutePath ?: "git"
+
+    private fun repo() = Repo(root.absolutePath, gitBin())
+
+    private fun gitTask(block: (Repo) -> Unit) {
+        viewModelScope.launch(Dispatchers.IO) {
+            gitBusy = true
+            try { block(repo()) } catch (e: IdeException) { gitOutput = err(e) } finally { gitBusy = false }
+            refreshGitNow()
+        }
+    }
+
+    private fun refreshGitNow() {
+        try {
+            val r = repo()
+            gitIsRepo = r.isRepo()
+            if (gitIsRepo) {
+                gitBranch = r.branch(); gitChanges = r.status(); gitCommits = r.log(30u)
+            } else {
+                gitBranch = null; gitChanges = emptyList(); gitCommits = emptyList()
+            }
+        } catch (e: IdeException) { gitOutput = err(e) }
+    }
+
+    fun refreshGit() { viewModelScope.launch(Dispatchers.IO) { refreshGitNow() } }
+    fun gitInit() = gitTask { it.init(); gitOutput = "Repository initialised" }
+    fun gitStage(c: GitChange) = gitTask { if (c.staged) it.unstage(listOf(c.path)) else it.stage(listOf(c.path)) }
+    fun gitStageAll() = gitTask { it.stageAll() }
+    fun gitSetRemote(url: String) = gitTask { it.addRemote(url); gitOutput = "Remote 'origin' set" }
+    fun gitCommit() = gitTask {
+        saveNow()
+        val s = settings
+        if (commitMessage.isBlank()) { gitOutput = "Write a commit message first"; return@gitTask }
+        gitOutput = it.commit(commitMessage.trim(), s.gitName.ifBlank { "Dev-IDE" }, s.gitEmail.ifBlank { "dev-ide@localhost" })
+        commitMessage = ""
+    }
+    fun gitPush() = gitTask { gitOutput = "Pushing…"; gitOutput = it.push(settings.gitToken).ifBlank { "Pushed" } }
+    fun gitPull() = gitTask { gitOutput = "Pulling…"; gitOutput = it.pull(settings.gitToken).ifBlank { "Up to date" } }
+
+    // ---- packages ------------------------------------------------------------------
+    fun refreshPackages() {
+        try { packages = pm.packages() } catch (e: IdeException) { pkgStatus = err(e) }
+    }
+
+    fun loadCatalog(url: String) {
+        viewModelScope.launch(Dispatchers.IO) {
+            pkgStatus = "Loading catalog…"
+            try {
+                val json = URL(url).openStream().bufferedReader().use { it.readText() }
+                val n = pm.setCatalog(json)
+                settings.catalogUrl = url
+                pkgStatus = "Catalog loaded: $n package(s)"
+            } catch (e: IdeException) {
+                pkgStatus = err(e)
+            } catch (e: java.io.IOException) {
+                pkgStatus = "Cannot load catalog: ${e.message}"
+            }
+            refreshPackages()
+        }
+    }
+
+    fun installPackage(id: String) {
+        if (pkgBusy != null) return
+        viewModelScope.launch(Dispatchers.IO) {
+            pkgBusy = id; pkgProgress = 0f
+            try {
+                val info = pm.packages().first { it.id == id }
+                if (!info.cached) {
+                    pkgStatus = "Downloading ${info.name}…"
+                    download(pm.downloadUrl(id), File(pm.archivePath(id)))
+                }
+                pkgStatus = "Installing ${info.name}…"
+                pm.install(id)
+                pkgStatus = "${info.name} installed"
+            } catch (e: IdeException) {
+                pkgStatus = err(e)
+            } catch (e: java.io.IOException) {
+                pkgStatus = "Download failed: ${e.message}"
+            } finally {
+                pkgBusy = null
+                refreshPackages()
+            }
+        }
+    }
+
+    fun removePackage(id: String) {
+        try { pm.uninstall(id); pkgStatus = "Removed" } catch (e: IdeException) { pkgStatus = err(e) }
+        refreshPackages()
+    }
+
+    private fun download(url: String, dest: File) {
+        val tmp = File(dest.path + ".part")
+        val c = URL(url).openConnection() as HttpURLConnection
+        c.connectTimeout = 15000; c.readTimeout = 30000
+        try {
+            if (c.responseCode !in 200..299) throw java.io.IOException("HTTP ${c.responseCode}")
+            val total = c.contentLengthLong
+            c.inputStream.use { input ->
+                tmp.outputStream().use { out ->
+                    val buf = ByteArray(64 * 1024)
+                    var done = 0L
+                    while (true) {
+                        val n = input.read(buf)
+                        if (n < 0) break
+                        out.write(buf, 0, n)
+                        done += n
+                        if (total > 0) pkgProgress = done.toFloat() / total
+                    }
+                }
+            }
+            dest.delete()
+            if (!tmp.renameTo(dest)) throw java.io.IOException("cannot move download into place")
+        } finally {
+            c.disconnect()
+            tmp.delete()
+        }
     }
 
     // ---- actions ------------------------------------------------------
@@ -275,25 +483,30 @@ class IdeViewModel(app: Application) : AndroidViewModel(app) {
             Action.Redo -> redo()
             Action.Save -> saveNow()
             Action.Files -> overlay = Overlay.Files
+            Action.Git -> { refreshGit(); overlay = Overlay.Git }
+            Action.Packages -> { refreshPackages(); overlay = Overlay.Packages }
             Action.CommentLine -> toggleComment()
             Action.DuplicateLine -> duplicateLine()
             Action.Terminal -> { outputTab = OutputTab.Terminal; panelSnap = PanelSnap.Normal }
             Action.Focus -> { peeking = false; panelSnap = PanelSnap.Folded }
             Action.More -> Unit // handled by the floating button (opens layer 2)
-            Action.Debug, Action.Git, Action.GoToDefinition, Action.Format ->
+            Action.Debug, Action.GoToDefinition, Action.Format ->
                 message = "${a.label} isn't available yet (planned: LSP/DAP/Git phases)"
         }
     }
 
     // ---- helpers ------------------------------------------------------
+    /** UniFFI error messages look like "v1=text"; show just the text. */
+    private fun err(e: IdeException): String = (e.message ?: "error").removePrefix("v1=")
+
     private fun bump() { version++ }
 
     private inline fun guard(block: () -> Unit) {
-        try { block() } catch (e: IdeException) { message = e.message ?: "error" }
+        try { block() } catch (e: IdeException) { message = err(e) }
     }
 
     override fun onCleared() {
         guard { ws.saveAll() }
-        shell?.destroy(); runProcess?.destroy()
+        term?.kill(); runProcess?.destroy()
     }
 }

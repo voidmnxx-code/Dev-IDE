@@ -35,5 +35,5 @@ jobs:
           ./gradlew assembleDebug --stacktrace
       - uses: actions/upload-artifact@v4
         with:
-          name: dev-ide-debug-apk
-          path: app/build/outputs/apk/debug/*.apk
+          name: dev-ide-debug-apks
+          path: app/build/outputs/apk/**/debug/*.apk

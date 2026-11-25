@@ -35,7 +35,15 @@ import androidx.compose.ui.input.key.onPreviewKeyEvent
 import androidx.compose.ui.input.key.type
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalSoftwareKeyboardController
+import androidx.compose.runtime.produceState
+import androidx.compose.ui.text.AnnotatedString
+import androidx.compose.ui.text.SpanStyle
 import androidx.compose.ui.text.TextLayoutResult
+import androidx.compose.ui.text.buildAnnotatedString
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.withContext
+import uniffi.ide_core.TokenSpan
 import androidx.compose.ui.text.TextRange
 import androidx.compose.ui.text.input.KeyboardCapitalization
 import androidx.compose.ui.text.input.KeyboardType
@@ -71,6 +79,13 @@ fun EditorView(vm: IdeViewModel, keyboardRequest: FocusRequester, modifier: Modi
         out
     }
 
+    // Syntax highlighting runs off the UI thread; stale spans are clamped per line.
+    val spans by produceState(emptyList<TokenSpan>(), vm.version, vm.activeTab) {
+        delay(40) // debounce while typing
+        value = withContext(Dispatchers.Default) { vm.highlight() }
+    }
+    val styled = remember(lines, lineStarts, spans) { styleLines(lines, lineStarts, spans) }
+
     // Keep the caret line visible without moving anything else.
     LaunchedEffect(cur?.line) {
         val line = cur?.line?.toInt() ?: return@LaunchedEffect
@@ -86,6 +101,7 @@ fun EditorView(vm: IdeViewModel, keyboardRequest: FocusRequester, modifier: Modi
                 EditorLine(
                     number = i + 1,
                     line = line,
+                    styled = styled[i],
                     start = lineStarts[i],
                     isCurrent = cur?.line?.toInt() == i,
                     caretCol = if (cur?.line?.toInt() == i) cur.column.toInt() else -1,
@@ -109,6 +125,7 @@ fun EditorView(vm: IdeViewModel, keyboardRequest: FocusRequester, modifier: Modi
 private fun EditorLine(
     number: Int,
     line: String,
+    styled: AnnotatedString,
     start: Int,
     isCurrent: Boolean,
     caretCol: Int,
@@ -160,11 +177,37 @@ private fun EditorLine(
                 },
         ) {
             Text(
-                line.ifEmpty { " " },
+                if (line.isEmpty()) AnnotatedString(" ") else styled,
                 style = Mono,
                 softWrap = false,
                 onTextLayout = { layout = it },
             )
+        }
+    }
+}
+
+private fun styleLines(lines: List<String>, lineStarts: IntArray, spans: List<TokenSpan>): List<AnnotatedString> {
+    val per = Array(lines.size) { mutableListOf<Triple<Int, Int, androidx.compose.ui.graphics.Color>>() }
+    for (sp in spans) {
+        val color = tokenColor(sp.kind) ?: continue
+        var s = sp.start.toInt()
+        val e = sp.end.toInt()
+        var li = java.util.Arrays.binarySearch(lineStarts, s).let { if (it >= 0) it else -it - 2 }.coerceAtLeast(0)
+        while (li < lines.size && s < e) {
+            val ls = lineStarts[li]
+            val l = lines[li]
+            val len = l.codePointCount(0, l.length)
+            val a = (s - ls).coerceAtLeast(0)
+            val b = (e - ls).coerceAtMost(len)
+            if (b > a) per[li].add(Triple(l.cpToIndex(a), l.cpToIndex(b), color))
+            s = ls + len + 1 // start of the next line
+            li++
+        }
+    }
+    return lines.mapIndexed { i, l ->
+        buildAnnotatedString {
+            append(l)
+            per[i].forEach { (a, b, c) -> addStyle(SpanStyle(color = c), a, b) }
         }
     }
 }

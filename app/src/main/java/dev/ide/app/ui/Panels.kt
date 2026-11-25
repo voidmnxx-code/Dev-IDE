@@ -17,6 +17,14 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.itemsIndexed
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
+import androidx.compose.ui.focus.focusRequester
+import androidx.compose.ui.input.key.key
+import androidx.compose.ui.input.key.onPreviewKeyEvent
+import androidx.compose.ui.input.key.type
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
@@ -120,25 +128,99 @@ private fun LinesView(lines: List<dev.ide.app.OutLine>) {
 private fun Placeholder(msg: String) =
     Text(msg, color = C.Muted, modifier = Modifier.padding(top = 12.dp))
 
+private const val TERM_SENTINEL = "\u200B\u200B"
+
+/** Real shell session (PTY). Keystrokes go straight to the process; output is rendered as text. */
 @Composable
 private fun TerminalView(vm: IdeViewModel) {
-    Column(Modifier.fillMaxSize()) {
-        Box(Modifier.weight(1f)) { LinesView(vm.terminal.toList()) }
-        Row(Modifier.fillMaxWidth().height(MinTouch), verticalAlignment = Alignment.CenterVertically) {
-            Text("$ ", style = Mono.copy(color = C.Ok))
-            BasicTextField(
-                value = vm.terminalInput,
-                onValueChange = { vm.terminalInput = it },
-                textStyle = Mono,
-                cursorBrush = SolidColor(C.Accent),
-                singleLine = true,
-                keyboardOptions = KeyboardOptions(imeAction = ImeAction.Send),
-                keyboardActions = KeyboardActions(onSend = {
-                    vm.terminalSend(vm.terminalInput); vm.terminalInput = ""
-                }),
-                modifier = Modifier.weight(1f).onFocusChanged { vm.terminalFocused = it.isFocused },
-            )
+    val measurer = androidx.compose.ui.text.rememberTextMeasurer()
+    val density = androidx.compose.ui.platform.LocalDensity.current
+    val cell = remember { measurer.measure("M", Mono).size }
+    val focus = remember { androidx.compose.ui.focus.FocusRequester() }
+    val keyboard = androidx.compose.ui.platform.LocalSoftwareKeyboardController.current
+    val listState = rememberLazyListState()
+    var input by remember {
+        androidx.compose.runtime.mutableStateOf(
+            androidx.compose.ui.text.input.TextFieldValue(TERM_SENTINEL, androidx.compose.ui.text.TextRange(1)),
+        )
+    }
+
+    androidx.compose.foundation.layout.BoxWithConstraints(
+        Modifier.fillMaxSize().clickable { focus.requestFocus(); keyboard?.show() },
+    ) {
+        val cols = (with(density) { maxWidth.toPx() } / cell.width).toInt()
+        val rows = (with(density) { maxHeight.toPx() } / cell.height).toInt()
+        LaunchedEffect(cols, rows) {
+            vm.ensureTerminal(cols, rows)
+            vm.terminalResize(cols, rows)
         }
+        LaunchedEffect(vm.termLines.size) {
+            if (vm.termLines.isNotEmpty()) listState.scrollToItem(vm.termLines.lastIndex)
+        }
+
+        val cur = vm.termCursor
+        Column(Modifier.fillMaxSize()) {
+            LazyColumn(state = listState, modifier = Modifier.weight(1f).fillMaxWidth()) {
+                itemsIndexed(vm.termLines) { i, line ->
+                    val text = if (cur != null && cur.line.toInt() == i && vm.termAlive) {
+                        val col = cur.col.toInt()
+                        val padded = line.padEnd(col + 1)
+                        androidx.compose.ui.text.buildAnnotatedString {
+                            append(padded)
+                            addStyle(
+                                androidx.compose.ui.text.SpanStyle(color = C.Bg, background = C.Accent),
+                                col, col + 1,
+                            )
+                        }
+                    } else {
+                        androidx.compose.ui.text.AnnotatedString(line.ifEmpty { " " })
+                    }
+                    Text(text, style = Mono.copy(fontSize = 15.sp), softWrap = false)
+                }
+            }
+            if (!vm.termAlive) {
+                Box(
+                    Modifier.fillMaxWidth().height(MinTouch).background(C.Bar)
+                        .clickable { vm.restartTerminal(cols, rows) },
+                    contentAlignment = Alignment.Center,
+                ) { Text("Session ended · tap to restart", color = C.Accent, fontWeight = FontWeight.SemiBold) }
+            }
+        }
+
+        // Invisible field that turns keyboard input into raw terminal input.
+        androidx.compose.foundation.text.BasicTextField(
+            value = input,
+            onValueChange = { new ->
+                val t = new.text
+                if (t.length < TERM_SENTINEL.length) vm.termRaw("\u007f")
+                else t.replace("\u200B", "").let { typed ->
+                    if (typed.isNotEmpty()) vm.termType(typed.replace("\n", "\r"))
+                }
+                input = androidx.compose.ui.text.input.TextFieldValue(
+                    TERM_SENTINEL, androidx.compose.ui.text.TextRange(1),
+                )
+            },
+            keyboardOptions = KeyboardOptions(
+                autoCorrectEnabled = false,
+                keyboardType = androidx.compose.ui.text.input.KeyboardType.Password,
+            ),
+            modifier = Modifier.size(1.dp).focusRequester(focus)
+                .onFocusChanged { vm.terminalFocused = it.isFocused }
+                .onPreviewKeyEvent { e ->
+                    if (e.type != androidx.compose.ui.input.key.KeyEventType.KeyDown) return@onPreviewKeyEvent false
+                    val raw = when (e.key) {
+                        androidx.compose.ui.input.key.Key.Enter -> "\r"
+                        androidx.compose.ui.input.key.Key.Backspace -> "\u007f"
+                        androidx.compose.ui.input.key.Key.Tab -> "\t"
+                        androidx.compose.ui.input.key.Key.DirectionUp -> "\u001b[A"
+                        androidx.compose.ui.input.key.Key.DirectionDown -> "\u001b[B"
+                        androidx.compose.ui.input.key.Key.DirectionRight -> "\u001b[C"
+                        androidx.compose.ui.input.key.Key.DirectionLeft -> "\u001b[D"
+                        else -> null
+                    }
+                    if (raw != null) { vm.termRaw(raw); true } else false
+                },
+        )
     }
 }
 

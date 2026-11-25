@@ -47,8 +47,11 @@ fun FilesDrawer(vm: IdeViewModel) {
             Modifier.fillMaxHeight().fillMaxWidth(0.82f).align(Alignment.CenterStart).statusBarsPadding()
                 .background(C.Bar).clickable(enabled = false) {}.padding(12.dp),
         ) {
-            Text("Files", color = C.Text, fontWeight = FontWeight.Bold, fontSize = 18.sp,
-                modifier = Modifier.padding(bottom = 8.dp))
+            Row(Modifier.fillMaxWidth().padding(bottom = 8.dp), verticalAlignment = Alignment.CenterVertically) {
+                Text("Files", color = C.Text, fontWeight = FontWeight.Bold, fontSize = 18.sp,
+                    modifier = Modifier.weight(1f))
+                Chip("Packages") { vm.perform(dev.ide.app.Action.Packages) }
+            }
             val rows = remember(vm.version, expanded) { flatten(vm, "", 0, expanded) }
             LazyColumn {
                 items(rows) { (e, depth) ->
@@ -118,9 +121,17 @@ fun FindBar(vm: IdeViewModel, modifier: Modifier = Modifier) {
 }
 
 @Composable
-private fun Field(value: String, hint: String, modifier: Modifier, onChange: (String) -> Unit) {
+internal fun Field(
+    value: String,
+    hint: String,
+    modifier: Modifier,
+    secret: Boolean = false,
+    onChange: (String) -> Unit,
+) {
     BasicTextField(
         value = value, onValueChange = onChange, singleLine = true,
+        visualTransformation = if (secret) androidx.compose.ui.text.input.PasswordVisualTransformation()
+        else androidx.compose.ui.text.input.VisualTransformation.None,
         textStyle = Mono, cursorBrush = SolidColor(C.Accent),
         modifier = modifier.heightIn44().clip(RoundedCornerShape(8.dp)).background(C.Panel).padding(horizontal = 10.dp),
         decorationBox = { inner ->
@@ -135,7 +146,7 @@ private fun Field(value: String, hint: String, modifier: Modifier, onChange: (St
 private fun Modifier.heightIn44() = this.then(Modifier.touchTarget())
 
 @Composable
-private fun Chip(label: String, onClick: () -> Unit) {
+internal fun Chip(label: String, onClick: () -> Unit) {
     Box(
         Modifier.touchTarget().clip(RoundedCornerShape(10.dp)).background(C.Key).clickable(onClick = onClick)
             .padding(horizontal = 12.dp),
@@ -247,7 +258,7 @@ fun AutoFoldScreen(vm: IdeViewModel) {
 }
 
 @Composable
-private fun Header(title: String, onBack: () -> Unit) {
+internal fun Header(title: String, onBack: () -> Unit) {
     Row(
         Modifier.fillMaxWidth().height44().clickable(onClick = onBack).padding(horizontal = 16.dp),
         verticalAlignment = Alignment.CenterVertically,
@@ -260,7 +271,7 @@ private fun Header(title: String, onBack: () -> Unit) {
 private fun Modifier.height44() = this.then(Modifier.touchTarget())
 
 @Composable
-private fun Section(t: String) =
+internal fun Section(t: String) =
     Text(t, color = C.Muted, fontSize = 13.sp, fontWeight = FontWeight.Bold,
         modifier = Modifier.padding(start = 16.dp, top = 20.dp, bottom = 8.dp))
 
