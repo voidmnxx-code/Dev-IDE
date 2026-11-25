@@ -4,6 +4,37 @@ plugins {
     id("org.jetbrains.kotlin.plugin.compose")
 }
 
+// ---- Rust core: cargo-ndk + UniFFI Kotlin bindings ---------------------
+val rustDir = rootProject.projectDir
+val jniOut = layout.projectDirectory.dir("src/main/jniLibs")
+val bindingsOut = layout.buildDirectory.dir("generated/uniffi/kotlin")
+
+val buildRustCore by tasks.registering(Exec::class) {
+    group = "rust"
+    description = "Cross-compiles ide_core for arm64-v8a (16 KB page aligned)."
+    workingDir = rustDir
+    environment("RUSTFLAGS", "-C link-arg=-Wl,-z,max-page-size=16384")
+    commandLine(
+        "cargo", "ndk", "-t", "arm64-v8a", "-o", jniOut.asFile.absolutePath,
+        "build", "--release", "-p", "ide_core",
+    )
+}
+
+val generateBindings by tasks.registering(Exec::class) {
+    group = "rust"
+    description = "Generates UniFFI Kotlin bindings from the compiled library."
+    dependsOn(buildRustCore)
+    workingDir = rustDir
+    // Declared as an output so Gradle orders it before Kotlin compilation.
+    outputs.dir(bindingsOut)
+    doFirst { bindingsOut.get().asFile.deleteRecursively() }
+    commandLine(
+        "cargo", "run", "--release", "--bin", "uniffi-bindgen", "--",
+        "generate", "--library", "target/aarch64-linux-android/release/libide_core.so",
+        "--language", "kotlin", "--no-format", "--out-dir", bindingsOut.get().asFile.absolutePath,
+    )
+}
+
 android {
     namespace = "dev.ide.app"
     compileSdk = 35
@@ -31,37 +62,7 @@ android {
     packaging {
         jniLibs { useLegacyPackaging = true } // extractNativeLibs=true: tools can be exec'd later
     }
-}
-
-// ---- Rust core: cargo-ndk + UniFFI Kotlin bindings ---------------------
-val rustDir = rootProject.projectDir
-val jniOut = layout.projectDirectory.dir("src/main/jniLibs")
-val bindingsOut = layout.projectDirectory.dir("src/main/java")
-
-val buildRustCore by tasks.registering(Exec::class) {
-    group = "rust"
-    description = "Cross-compiles ide_core for arm64-v8a (16 KB page aligned)."
-    workingDir = rustDir
-    environment(
-        "RUSTFLAGS",
-        "-C link-arg=-Wl,-z,max-page-size=16384",
-    )
-    commandLine(
-        "cargo", "ndk", "-t", "arm64-v8a", "-o", jniOut.asFile.absolutePath,
-        "build", "--release", "-p", "ide_core",
-    )
-}
-
-val generateBindings by tasks.registering(Exec::class) {
-    group = "rust"
-    description = "Generates UniFFI Kotlin bindings from the compiled library."
-    dependsOn(buildRustCore)
-    workingDir = rustDir
-    commandLine(
-        "cargo", "run", "--release", "--bin", "uniffi-bindgen", "--",
-        "generate", "--library", "target/aarch64-linux-android/release/libide_core.so",
-        "--language", "kotlin", "--out-dir", bindingsOut.asFile.absolutePath,
-    )
+    sourceSets.getByName("main").java.srcDir(generateBindings.map { bindingsOut.get() })
 }
 
 tasks.named("preBuild") { dependsOn(generateBindings) }

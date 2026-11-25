@@ -203,6 +203,7 @@ fun CursorEditor(vm: IdeViewModel, compact: Boolean = false) {
     }
 }
 
+@OptIn(ExperimentalFoundationApi::class)
 @Composable
 private fun PadButton(
     label: String,
