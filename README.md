@@ -6,16 +6,20 @@ A native, offline-capable development environment for Android, written in
 design spec (type-first layout, auto-folding output panel with Peek, floating
 `^` action button, extra-keys row, cursor/selection pad).
 
-## Status — Phase 1 (core + UI shell)
+## Status — Phase 2
 
 | Area | State |
 | --- | --- |
-| Rust text buffer (rope, undo/redo, selection, smart pairs, comment/duplicate line, find/replace) | done, 15 unit tests |
-| Project files sandboxed to the project root, tabs, autosave | done, 6 tests |
-| UniFFI → Kotlin bindings (generated, no hand-written JNI) | done (generation verified) |
-| Compose UI: output panel w/ snap + drag, file tabs, editor, `^` button (2 layers + customize), extra keys, cursor editor, auto-fold + Peek, landscape, settings | written — **not yet compiled or run on a device** |
-| Run / Terminal | basic `Process` stubs (`node`/`python3`/`sh`); real PTY comes in Phase 2 |
-| Tree-sitter highlighting, LSP, DAP, Git, package manager, Android/web/game builds, cross-export | roadmap phases 2–4 (see the research doc) |
+| Rust text buffer, undo/redo, selection, smart pairs, find/replace, autosave | done, tested |
+| **Real terminal**: PTY shell (`portable-pty`) + small ANSI/UTF-8 screen model, Ctrl/Esc/arrows row | done, tested on Linux host |
+| **Syntax highlighting**: tree-sitter for JS, Python, Rust, JSON, Kotlin, HTML, CSS, Bash, TOML | done, tested |
+| **Git (hybrid)**: gitoxide for status/branch/log; `git` binary for stage/commit/push/pull | done, tested against a local remote |
+| **Package manager**: JSON catalog, SHA-256 check, tar.gz/zip extraction, offline reinstall, PATH/env | done, tested (no catalog ships) |
+| Compose UI for all of the above (terminal tab, coloured editor, Git screen, Packages screen) | compiles in CI; **not yet run on a device** |
+| LSP, DAP, Android/web/game build pipelines, cross-export | phases 3–4 |
+
+Two APK flavors are built: **store** (targetSdk 35, no package manager) and **full**
+(targetSdk 28, package manager on; see `docs/packages.md` for why).
 
 ## Layout
 
@@ -30,7 +34,7 @@ Prerequisites: JDK 17, Android SDK (API 35), Android NDK, Rust with the
 `aarch64-linux-android` target, and `cargo install cargo-ndk`.
 
 ```
-cargo test                 # Rust core tests (no Android needed)
+cargo test                 # Rust core tests (47, no Android needed)
 ./gradlew assembleDebug    # cross-compiles the core, generates bindings, builds the APK
 ```
 
@@ -53,6 +57,6 @@ and uploads the debug APK as an artifact.
 
 ## Not yet implemented from the UI spec
 
-Two-finger-tap undo, drag-to-reorder in Customize (up/down buttons instead),
+Two-finger-tap undo (also: Git clone UI, terminal colours, git token in the Android Keystore), drag-to-reorder in Customize (up/down buttons instead),
 tablet split editor, drag selection handles, hardware-keyboard shortcuts, Git /
 Files / Replace dedicated panels, cursor-editor control of the terminal line.
