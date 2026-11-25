@@ -20,19 +20,34 @@ val buildRustCore by tasks.registering(Exec::class) {
     )
 }
 
+// UniFFI reads its metadata from the library's symbols, and the stripped Android
+// release .so has none. So bindings are generated from an unstripped host build
+// of the same crate (the interface is identical on every target).
+val hostLibExt = if (System.getProperty("os.name").startsWith("Mac")) "dylib" else "so"
+
+val buildHostCore by tasks.registering(Exec::class) {
+    group = "rust"
+    workingDir = rustDir
+    commandLine("cargo", "build", "-p", "ide_core")
+}
+
 val generateBindings by tasks.registering(Exec::class) {
     group = "rust"
-    description = "Generates UniFFI Kotlin bindings from the compiled library."
-    dependsOn(buildRustCore)
+    description = "Generates UniFFI Kotlin bindings."
+    dependsOn(buildHostCore)
     workingDir = rustDir
     // Declared as an output so Gradle orders it before Kotlin compilation.
     outputs.dir(bindingsOut)
     doFirst { bindingsOut.get().asFile.deleteRecursively() }
     commandLine(
-        "cargo", "run", "--release", "--bin", "uniffi-bindgen", "--",
-        "generate", "--library", "target/aarch64-linux-android/release/libide_core.so",
+        "cargo", "run", "--bin", "uniffi-bindgen", "--",
+        "generate", "--library", "target/debug/libide_core.$hostLibExt",
         "--language", "kotlin", "--no-format", "--out-dir", bindingsOut.get().asFile.absolutePath,
     )
+    doLast {
+        val kt = bindingsOut.get().asFile.walkTopDown().filter { it.extension == "kt" }.toList()
+        check(kt.isNotEmpty()) { "uniffi-bindgen produced no Kotlin files" }
+    }
 }
 
 android {
@@ -65,7 +80,7 @@ android {
     sourceSets.getByName("main").java.srcDir(generateBindings.map { bindingsOut.get() })
 }
 
-tasks.named("preBuild") { dependsOn(generateBindings) }
+tasks.named("preBuild") { dependsOn(buildRustCore, generateBindings) }
 
 dependencies {
     val composeBom = platform("androidx.compose:compose-bom:2024.12.01")
