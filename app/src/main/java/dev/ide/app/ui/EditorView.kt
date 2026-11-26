@@ -35,6 +35,7 @@ import androidx.compose.ui.input.key.onPreviewKeyEvent
 import androidx.compose.ui.input.key.type
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.foundation.gestures.awaitFirstDown
+import androidx.compose.foundation.gestures.awaitEachGesture
 import androidx.compose.ui.platform.LocalSoftwareKeyboardController
 import androidx.compose.runtime.produceState
 import androidx.compose.ui.text.AnnotatedString
@@ -99,7 +100,7 @@ fun EditorView(vm: IdeViewModel, keyboardRequest: FocusRequester, modifier: Modi
     Box(
         modifier.fillMaxSize().background(C.Bg).pointerInput(Unit) {
             // Two-finger tap = undo (spec §5). Observes only; never consumes.
-            androidx.compose.foundation.gestures.awaitEachGesture {
+            awaitEachGesture {
                 val first = awaitFirstDown(requireUnconsumed = false, pass = androidx.compose.ui.input.pointer.PointerEventPass.Initial)
                 val t0 = first.uptimeMillis
                 var maxPointers = 1
