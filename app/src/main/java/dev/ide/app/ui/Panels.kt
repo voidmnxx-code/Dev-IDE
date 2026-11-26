@@ -138,6 +138,7 @@ private fun TerminalView(vm: IdeViewModel) {
     val cell = remember { measurer.measure("M", Mono).size }
     val focus = remember { androidx.compose.ui.focus.FocusRequester() }
     val keyboard = androidx.compose.ui.platform.LocalSoftwareKeyboardController.current
+    LaunchedEffect(vm.terminalRefocus) { if (vm.terminalRefocus > 0) { try { focus.requestFocus() } catch (_: Exception) {}; keyboard?.show() } }
     val listState = rememberLazyListState()
     var input by remember {
         androidx.compose.runtime.mutableStateOf(
@@ -242,11 +243,11 @@ private fun DragHandle(onDelta: (Float) -> Unit, onEnd: () -> Unit) {
 
 /** Folded output: a 20dp strip, with a 44dp tap area (spec §9). */
 @Composable
-fun FoldedLine(vm: IdeViewModel, modifier: Modifier = Modifier) {
+fun FoldedLine(vm: IdeViewModel, modifier: Modifier = Modifier, compact: Boolean = false, onExpand: (() -> Unit)? = null) {
     val tab = vm.tabs.getOrNull(vm.activeTab)
     val err = vm.lastError
     Row(
-        modifier.fillMaxWidth().height(MinTouch).background(C.Bar)
+        modifier.fillMaxWidth().height(if (compact) 32.dp else MinTouch).background(C.Bar)
             .clickable(enabled = vm.settings.tapFoldToPeek) { vm.peeking = !vm.peeking }
             .padding(horizontal = 10.dp),
         verticalAlignment = Alignment.CenterVertically,
@@ -261,6 +262,11 @@ fun FoldedLine(vm: IdeViewModel, modifier: Modifier = Modifier) {
             if (vm.peeking) "Tap to close" else if (err != null) "Error · tap to peek" else "Tap to peek",
             color = C.Muted, fontSize = 13.sp,
         )
+        if (onExpand != null) {
+            Text("▾", color = C.Accent, fontSize = 18.sp,
+                modifier = Modifier.clickable(onClick = onExpand).padding(horizontal = 12.dp, vertical = 2.dp)
+                    .semantics { contentDescription = "Open output panel" })
+        }
     }
 }
 

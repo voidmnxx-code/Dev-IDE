@@ -112,7 +112,7 @@ fun BoxScope.FloatingActions(vm: IdeViewModel, typing: Boolean, containerWidthPx
                     onLongClick = { vm.perform(vm.settings.longPressAction) },
                 ),
             contentAlignment = Alignment.Center,
-        ) { Text(if (layer == 0) "^" else "v", color = C.Bg, fontSize = 22.sp, fontWeight = FontWeight.Bold) }
+        ) { Text(if (layer == 0) "⌃" else "⌄", color = C.Bg, fontSize = 22.sp, fontWeight = FontWeight.Bold) }
     }
 }
 

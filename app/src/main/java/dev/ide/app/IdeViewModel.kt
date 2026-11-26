@@ -78,6 +78,9 @@ class IdeViewModel(app: Application) : AndroidViewModel(app) {
     var selectMode by mutableStateOf(false)
     var peeking by mutableStateOf(false)
     var terminalFocused by mutableStateOf(false)
+    /** True while the cursor editor is driving the terminal instead of the code editor. */
+    var cursorForTerminal by mutableStateOf(false)
+    var terminalRefocus by mutableStateOf(0)
     var overlay by mutableStateOf<Overlay?>(null)
 
     enum class Overlay { Files, Find, Customize, AutoFold, NewFile, Git, Packages, Preview, NewProject }

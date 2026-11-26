@@ -246,7 +246,7 @@ fun AutoFoldScreen(vm: IdeViewModel) {
         Header("Auto-fold") { vm.overlay = IdeViewModel.Overlay.Customize }
         Section("FOLD WHEN TYPING")
         Radio("Always", "Portrait and landscape", mode == FoldMode.Always) { mode = FoldMode.Always; s.foldMode = mode }
-        Radio("Landscape only", "Portrait never folds", mode == FoldMode.LandscapeOnly) {
+        Radio("Landscape only", "Portrait keeps the one-line output", mode == FoldMode.LandscapeOnly) {
             mode = FoldMode.LandscapeOnly; s.foldMode = mode
         }
         Radio("Off", "Layout never changes", mode == FoldMode.Off) { mode = FoldMode.Off; s.foldMode = mode }

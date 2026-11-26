@@ -87,13 +87,13 @@ private fun terminalKeys(ctrl: Boolean) = listOf(
 fun ExtraKeysRow(vm: IdeViewModel, terminal: Boolean) {
     val keys = if (terminal) terminalKeys(vm.ctrlActive) else codeKeys
     LazyRow(
-        Modifier.fillMaxWidth().height(MinTouch).background(C.Bar),
+        Modifier.fillMaxWidth().height(52.dp).background(C.Bar),
         horizontalArrangement = Arrangement.spacedBy(4.dp),
-        contentPadding = androidx.compose.foundation.layout.PaddingValues(horizontal = 6.dp, vertical = 3.dp),
+        contentPadding = androidx.compose.foundation.layout.PaddingValues(horizontal = 6.dp, vertical = 4.dp),
     ) {
         item {
             Box(
-                Modifier.width(MinTouch).height(38.dp).clip(RoundedCornerShape(8.dp)).background(C.CursorKey)
+                Modifier.width(MinTouch).height(44.dp).clip(RoundedCornerShape(8.dp)).background(C.CursorKey)
                     .semantics { contentDescription = "Cursor editor" }
                     .combinedClickable { vm.keyboardMode = KeyboardMode.Cursor },
                 contentAlignment = Alignment.Center,
@@ -103,7 +103,7 @@ fun ExtraKeysRow(vm: IdeViewModel, terminal: Boolean) {
             var menu by remember { mutableStateOf(false) }
             Box {
                 Box(
-                    Modifier.widthIn(min = MinTouch).height(38.dp).clip(RoundedCornerShape(8.dp)).background(C.Key)
+                    Modifier.widthIn(min = MinTouch).height(44.dp).clip(RoundedCornerShape(8.dp)).background(C.Key)
                         .combinedClickable(
                             onClick = { k.onTap(vm) },
                             onLongClick = { if (k.alts.isNotEmpty()) menu = true },
@@ -135,12 +135,19 @@ fun CursorEditor(vm: IdeViewModel, compact: Boolean = false) {
     val density = LocalDensity.current
     val stepX = with(density) { 12.dp.toPx() }
     val stepY = with(density) { 26.dp.toPx() }
+    val term = vm.cursorForTerminal
+    fun arrow(m: CursorMove, seq: String) { if (term) vm.termRaw(seq) else vm.moveCursor(m) }
 
     Column(
         Modifier.fillMaxWidth().height(if (compact) 220.dp else 334.dp).background(C.KeyboardBg).padding(if (compact) 4.dp else 8.dp),
         verticalArrangement = Arrangement.spacedBy(8.dp),
     ) {
-        Row(Modifier.fillMaxWidth().height(rowH), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+        if (term) Row(Modifier.fillMaxWidth().height(rowH), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            PadButton("Home", Modifier.weight(1f)) { vm.termRaw("\u001b[H") }
+            PadButton("End", Modifier.weight(1f)) { vm.termRaw("\u001b[F") }
+            PadButton("Ctrl+C", Modifier.weight(1f)) { vm.termRaw("\u0003") }
+            PadButton("Ctrl+D", Modifier.weight(1f)) { vm.termRaw("\u0004") }
+        } else Row(Modifier.fillMaxWidth().height(rowH), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
             PadButton(
                 if (vm.selectMode) "Select ON" else "Select",
                 Modifier.weight(1f),
@@ -164,7 +171,10 @@ fun CursorEditor(vm: IdeViewModel, compact: Boolean = false) {
                             val dx = (accX / stepX).toInt()
                             val dy = (accY / stepY).toInt()
                             if (dx != 0 || dy != 0) {
-                                vm.nudge(dx, dy)
+                                if (term) {
+                                    repeat(kotlin.math.abs(dx)) { vm.termRaw(if (dx > 0) "\u001b[C" else "\u001b[D") }
+                                    repeat(kotlin.math.abs(dy)) { vm.termRaw(if (dy > 0) "\u001b[B" else "\u001b[A") }
+                                } else vm.nudge(dx, dy)
                                 accX -= dx * stepX; accY -= dy * stepY
                             }
                         }
@@ -179,25 +189,32 @@ fun CursorEditor(vm: IdeViewModel, compact: Boolean = false) {
             }
             Column(Modifier.weight(1f).fillMaxSize(), verticalArrangement = Arrangement.spacedBy(6.dp)) {
                 Row(Modifier.weight(1f).fillMaxWidth(), horizontalArrangement = Arrangement.Center) {
-                    PadButton("↑", Modifier.width(60.dp).fillMaxSize()) { vm.moveCursor(CursorMove.UP) }
+                    PadButton("↑", Modifier.width(60.dp).fillMaxSize()) { arrow(CursorMove.UP, "\u001b[A") }
                 }
                 Row(Modifier.weight(1f).fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                    PadButton("←", Modifier.weight(1f).fillMaxSize()) { vm.moveCursor(CursorMove.LEFT) }
+                    PadButton("←", Modifier.weight(1f).fillMaxSize()) { arrow(CursorMove.LEFT, "\u001b[D") }
                     PadButton("Esc", Modifier.weight(1f).fillMaxSize()) {
-                        vm.selectMode = false; vm.clearSelection()
+                        if (term) vm.termRaw("\u001b") else { vm.selectMode = false; vm.clearSelection() }
                     }
-                    PadButton("→", Modifier.weight(1f).fillMaxSize()) { vm.moveCursor(CursorMove.RIGHT) }
+                    PadButton("→", Modifier.weight(1f).fillMaxSize()) { arrow(CursorMove.RIGHT, "\u001b[C") }
                 }
                 Row(Modifier.weight(1f).fillMaxWidth(), horizontalArrangement = Arrangement.Center) {
-                    PadButton("↓", Modifier.width(60.dp).fillMaxSize()) { vm.moveCursor(CursorMove.DOWN) }
+                    PadButton("↓", Modifier.width(60.dp).fillMaxSize()) { arrow(CursorMove.DOWN, "\u001b[B") }
                 }
             }
         }
         Row(Modifier.fillMaxWidth().height(rowH), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            if (term) {
+                PadButton("Tab", Modifier.weight(1f)) { vm.termRaw("\t") }
+                PadButton("Ctrl+L", Modifier.weight(1f)) { vm.termRaw("\u000c") }
+                PadButton("Paste", Modifier.weight(1f)) { clipboard.getText()?.text?.let { vm.termRaw(it) } }
+                PadButton("Enter", Modifier.weight(1f)) { vm.termRaw("\r") }
+            } else {
             PadButton("Cut", Modifier.weight(1f)) { clipboard.setText(AnnotatedString(vm.cut())) }
             PadButton("Copy", Modifier.weight(1f)) { clipboard.setText(AnnotatedString(vm.selectedText())) }
             PadButton("Paste", Modifier.weight(1f)) { clipboard.getText()?.text?.let { vm.insert(it) } }
             PadButton("All", Modifier.weight(1f)) { vm.select(SelectUnit.DOCUMENT) }
+            }
         }
         PadButton("ABC · Back to keys", Modifier.fillMaxWidth().height(rowH + 4.dp), primary = true) {
             vm.keyboardMode = KeyboardMode.System

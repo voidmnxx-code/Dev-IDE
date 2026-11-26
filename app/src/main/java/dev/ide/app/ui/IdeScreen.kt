@@ -79,13 +79,18 @@ fun IdeScreen(vm: IdeViewModel) {
         }
     }
 
+    // Back closes the topmost thing first: overlay, then peek, then cursor editor.
+    androidx.activity.compose.BackHandler(enabled = vm.overlay != null || vm.peeking) {
+        if (vm.overlay != null) vm.overlay = null else vm.peeking = false
+    }
+
     // ---- state machine (spec §3) -------------------------------------
     val foldAllowed = when (vm.settings.foldMode) {
         FoldMode.Always -> true
-        FoldMode.LandscapeOnly -> landscape
+        FoldMode.LandscapeOnly -> true // portrait keeps the one-line output (user decision)
         FoldMode.Off -> false
     }
-    val terminalTyping = terminalActive && imeVisible && vm.terminalFocused
+    val terminalTyping = terminalActive && vm.terminalFocused && (imeVisible || (cursorMode && vm.cursorForTerminal))
     val autoFold = foldAllowed && !terminalTyping &&
         ((imeVisible) || (cursorMode && vm.settings.foldInCursorMode))
     val showFolded = autoFold || vm.panelSnap == PanelSnap.Folded
@@ -98,8 +103,13 @@ fun IdeScreen(vm: IdeViewModel) {
     var first by remember { mutableStateOf(true) }
     LaunchedEffect(vm.keyboardMode) {
         if (first) { first = false; return@LaunchedEffect }
-        if (vm.keyboardMode == KeyboardMode.Cursor) keyboard?.hide()
-        else { editorFocus.requestFocus(); keyboard?.show() }
+        if (vm.keyboardMode == KeyboardMode.Cursor) {
+            vm.cursorForTerminal = terminalActive && vm.terminalFocused
+            keyboard?.hide()
+        } else if (vm.cursorForTerminal) {
+            vm.cursorForTerminal = false
+            vm.terminalRefocus++ // TerminalView takes focus and shows the keyboard
+        } else { editorFocus.requestFocus(); keyboard?.show() }
     }
 
     Box(Modifier.fillMaxSize().background(C.Bg).systemBarsPadding().imePadding()) {
@@ -191,6 +201,14 @@ private fun LandscapeBody(vm: IdeViewModel, showFolded: Boolean, typing: Boolean
         var live by remember { mutableFloatStateOf(vm.panelWidthFraction) }
         LaunchedEffect(vm.panelWidthFraction) { if (!dragging) live = vm.panelWidthFraction }
 
+        if (showFolded) {
+            // Page 11: output + file bar collapse into ONE thin line above the editor.
+            Column(Modifier.fillMaxSize()) {
+                FoldedLine(vm, compact = true, onExpand = { vm.panelSnap = PanelSnap.Normal })
+                EditorArea(vm, true, typing, focus, Modifier.weight(1f), peekTabs = true)
+            }
+            return@BoxWithConstraints
+        }
         Row(Modifier.fillMaxSize()) {
             if (!showFolded) {
                 OutputPanel(vm, Modifier.width(totalWidth * live).fillMaxHeight(), vertical = false)
@@ -219,42 +237,9 @@ private fun LandscapeBody(vm: IdeViewModel, showFolded: Boolean, typing: Boolean
                     Box(Modifier.width(1.dp).fillMaxHeight().background(C.Key))
                     Box(Modifier.size(width = 5.dp, height = 56.dp).clip(CircleShape).background(C.Muted))
                 }
-            } else {
-                // Folded: a slim handle to bring the panel back (tap, or drag to the right).
-                Box(
-                    Modifier.width(MinTouch).fillMaxHeight().background(C.Bar)
-                        .semantics { contentDescription = "Open output panel" }
-                        .clickable {
-                            if (vm.panelSnap == PanelSnap.Folded) vm.panelSnap = PanelSnap.Normal
-                            else vm.peeking = !vm.peeking
-                        }
-                        .pointerInput(Unit) {
-                            detectHorizontalDragGestures { change, dx ->
-                                change.consume()
-                                if (dx > 6f && vm.panelSnap == PanelSnap.Folded) vm.panelSnap = PanelSnap.Normal
-                            }
-                        },
-                    contentAlignment = Alignment.Center,
-                ) {
-                    if (vm.settings.redDotOnFold && vm.lastError != null) {
-                        Box(Modifier.size(10.dp).clip(CircleShape).background(C.Error))
-                    } else {
-                        Box(Modifier.size(width = 5.dp, height = 56.dp).clip(CircleShape).background(C.Muted))
-                    }
-                }
             }
             Column(Modifier.weight(1f).fillMaxHeight()) {
-                FileTabs(vm) {
-                    // Folded: latest error sits in the tab row (spec §10).
-                    if (showFolded) vm.lastError?.let {
-                        Text(
-                            it, color = C.Error, fontSize = 13.sp,
-                            modifier = Modifier.clickable(enabled = vm.settings.tapFoldToPeek) { vm.peeking = !vm.peeking }
-                                .padding(horizontal = 10.dp),
-                            maxLines = 1,
-                        )
-                    }
-                }
+                FileTabs(vm)
                 EditorArea(vm, showFolded, typing, focus, Modifier.weight(1f))
             }
         }
@@ -282,6 +267,7 @@ private fun EditorArea(
     typing: Boolean,
     focus: FocusRequester,
     modifier: Modifier,
+    peekTabs: Boolean = false,
 ) {
     BoxWithConstraints(modifier.fillMaxWidth()) {
         val widthPx = with(LocalDensity.current) { maxWidth.toPx() }
@@ -294,11 +280,13 @@ private fun EditorArea(
 
         // Peek: the panel opens ABOVE the editor and never pushes the code down.
         if (showFolded && vm.peeking) {
-            OutputPanel(
-                vm,
-                Modifier.align(Alignment.TopCenter).fillMaxWidth().fillMaxHeight(0.45f),
-                vertical = false,
-            )
+            Column(
+                Modifier.align(Alignment.TopCenter).fillMaxWidth()
+                    .fillMaxHeight(if (peekTabs) 0.8f else 0.45f),
+            ) {
+                if (peekTabs) FileTabs(vm)
+                OutputPanel(vm, Modifier.weight(1f).fillMaxWidth(), vertical = false)
+            }
         }
         FloatingActions(vm, typing, widthPx, with(LocalDensity.current) { maxHeight.toPx() })
     }
