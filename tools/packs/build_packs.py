@@ -42,6 +42,11 @@ TOP = {
 }
 
 
+def pid(name):
+    """Catalog id: the app accepts letters, digits, '-', '_' and '.' (Termux names like libc++ need mapping)."""
+    return re.sub(r"[^A-Za-z0-9_.-]", "p", name)
+
+
 def fetch(url):
     with urllib.request.urlopen(url, timeout=120) as r:
         return r.read()
@@ -173,7 +178,7 @@ def main():
             tid = top_by_pkg.get(pkg)
             meta = TOP.get(tid) if tid else None
             entries.append({
-                "id": tid or pkg,
+                "id": tid or pid(pkg),
                 "name": meta[1] if meta else pkg,
                 "version": info["Version"].replace(":", "_"),
                 "description": meta[2] if meta else info.get("Description", "").split("\n")[0],
@@ -185,12 +190,15 @@ def main():
                 "bin": meta[3] if meta else [],
                 "env": meta[4] if meta else {},
                 "size": size,
-                "deps": [top_by_pkg.get(d, d) for d in deps_of(info) if d in order and d not in NEVER],
+                "deps": [top_by_pkg.get(d, pid(d)) for d in deps_of(info) if d in order and d not in NEVER],
                 "_deb": pkg,
             })
             print(f"built {pkg} ({size // 1024} KiB)")
-    # Drop dependencies on metapackages that produced no archive.
+    # Drop dependencies on metapackages that produced no archive; check every id is valid for the app.
     ids = {e["id"] for e in entries}
+    bad = [i for i in ids if not re.fullmatch(r"[A-Za-z0-9_][A-Za-z0-9_.-]{0,63}", i)]
+    if bad:
+        raise SystemExit(f"invalid catalog ids: {bad}")
     for e in entries:
         e["deps"] = [d for d in e["deps"] if d in ids]
         e.pop("_deb")
