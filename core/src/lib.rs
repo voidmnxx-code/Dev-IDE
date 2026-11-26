@@ -1,15 +1,19 @@
 //! Dev-IDE core. Everything the Kotlin UI needs is exposed through the
 //! `Workspace` object below via UniFFI (no hand-written JNI).
 
+mod buildplan;
 mod editor;
 mod git;
 mod highlight;
 mod pkg;
 mod project;
 mod screen;
+mod templates;
 mod terminal;
+mod webserver;
 
 use editor::{Buffer, Move};
+pub use buildplan::{Diagnostic, ProjectKind, Severity};
 pub use git::{ChangeKind, CommitInfo, GitChange};
 pub use highlight::{TokenKind, TokenSpan};
 use std::path::PathBuf;
@@ -379,6 +383,113 @@ impl Workspace {
         case_sensitive: bool,
     ) -> Result<u32, IdeError> {
         self.with_tab(tab, |b| b.replace_all(&needle, &with, case_sensitive) as u32)
+    }
+}
+
+// ---- build plans, diagnostics, templates --------------------------------------
+
+#[derive(uniffi::Record, Clone, Debug)]
+pub struct BuildPlan {
+    pub kind: ProjectKind,
+    pub description: String,
+    /// Empty when there is nothing to build (static web).
+    pub command: Vec<String>,
+    pub env: Vec<String>,
+    pub previewable: bool,
+}
+
+/// How to build `root`. `aapt2` is the path of a native aarch64 aapt2 ("" if unknown).
+#[uniffi::export]
+pub fn detect_build(root: String, aapt2: String) -> BuildPlan {
+    let p = buildplan::detect(std::path::Path::new(&root), Some(aapt2.as_str()));
+    BuildPlan { kind: p.kind, description: p.description, command: p.command, env: p.env, previewable: p.previewable }
+}
+
+#[uniffi::export]
+pub fn find_apks(root: String) -> Vec<String> {
+    buildplan::find_apks(std::path::Path::new(&root))
+}
+
+/// Compiler/build output -> structured errors and warnings (rustc, kotlinc, javac, gcc/clang).
+#[uniffi::export]
+pub fn parse_diagnostics(output: String, root: String) -> Vec<Diagnostic> {
+    buildplan::parse_diagnostics(&output, &root)
+}
+
+#[derive(uniffi::Record, Clone, Debug)]
+pub struct TemplateInfo {
+    pub id: String,
+    pub name: String,
+    pub description: String,
+}
+
+#[uniffi::export]
+pub fn project_templates() -> Vec<TemplateInfo> {
+    templates::ALL
+        .iter()
+        .map(|t| TemplateInfo { id: t.id.into(), name: t.name.into(), description: t.description.into() })
+        .collect()
+}
+
+/// Creates `<root>/<name>` from a template; returns the project folder relative to `root`.
+#[uniffi::export]
+pub fn create_from_template(root: String, template_id: String, name: String) -> Result<String, IdeError> {
+    templates::create(std::path::Path::new(&root), &template_id, &name)
+}
+
+// ---- web preview ------------------------------------------------------------
+
+#[derive(uniffi::Record, Clone, Debug)]
+pub struct PreviewPlan {
+    /// Entry page relative to the project root; empty when the project has no HTML page.
+    pub entry: String,
+    /// Needs cross-origin isolation: open in Chrome Custom Tabs, not WebView.
+    pub isolated: bool,
+    pub reason: String,
+}
+
+/// Decide how a web project must be previewed.
+#[uniffi::export]
+pub fn analyze_preview(root: String) -> PreviewPlan {
+    let p = webserver::analyze(std::path::Path::new(&root));
+    PreviewPlan { entry: p.entry, isolated: p.isolated, reason: p.reason }
+}
+
+/// Loopback-only static server with live reload. Hosted by the foreground service.
+#[derive(uniffi::Object)]
+pub struct WebServer {
+    inner: Mutex<Option<webserver::Server>>,
+}
+
+#[uniffi::export]
+impl WebServer {
+    #[uniffi::constructor]
+    pub fn new() -> Self {
+        WebServer { inner: Mutex::new(None) }
+    }
+
+    /// Starts (or restarts) serving `root`. `port` 0 picks a free port. Returns the port.
+    pub fn start(&self, root: String, port: u32, isolated: bool, live_reload: bool) -> Result<u32, IdeError> {
+        let mut g = self.inner.lock().unwrap();
+        if let Some(mut old) = g.take() {
+            old.stop();
+        }
+        let s = webserver::Server::start(std::path::Path::new(&root), port as u16, isolated, live_reload)
+            .map_err(|e| IdeError::Io(e.to_string()))?;
+        let p = s.port() as u32;
+        *g = Some(s);
+        Ok(p)
+    }
+
+    pub fn stop(&self) {
+        if let Some(mut s) = self.inner.lock().unwrap().take() {
+            s.stop();
+        }
+    }
+
+    /// 0 when not running.
+    pub fn port(&self) -> u32 {
+        self.inner.lock().unwrap().as_ref().map(|s| s.port() as u32).unwrap_or(0)
     }
 }
 

@@ -40,7 +40,9 @@ impl Session {
         let mut reader = pair.master.try_clone_reader().map_err(|e| e.to_string())?;
         let writer = pair.master.take_writer().map_err(|e| e.to_string())?;
 
-        let screen = Arc::new(Mutex::new(Screen::new()));
+        let mut scr = Screen::new();
+        scr.set_cols(cols as usize);
+        let screen = Arc::new(Mutex::new(scr));
         let version = Arc::new(AtomicU64::new(0));
         let alive = Arc::new(AtomicBool::new(true));
         {
@@ -77,6 +79,7 @@ impl Session {
     }
 
     pub fn resize(&self, cols: u16, rows: u16) -> Result<(), String> {
+        self.screen.lock().unwrap().set_cols(cols as usize);
         self.master
             .lock()
             .unwrap()

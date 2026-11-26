@@ -17,14 +17,27 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import android.content.ActivityNotFoundException
+import android.content.Intent
+import androidx.core.content.FileProvider
 import uniffi.ide_core.ChangeKind
 import uniffi.ide_core.CommitInfo
 import uniffi.ide_core.CursorInfo
 import uniffi.ide_core.CursorMove
+import uniffi.ide_core.Diagnostic
 import uniffi.ide_core.GitChange
 import uniffi.ide_core.IdeException
 import uniffi.ide_core.PackageInfo
 import uniffi.ide_core.PackageManager
+import uniffi.ide_core.ProjectKind
+import uniffi.ide_core.Severity
+import uniffi.ide_core.TemplateInfo
+import uniffi.ide_core.analyzePreview
+import uniffi.ide_core.createFromTemplate
+import uniffi.ide_core.detectBuild
+import uniffi.ide_core.findApks
+import uniffi.ide_core.parseDiagnostics
+import uniffi.ide_core.projectTemplates
 import uniffi.ide_core.Repo
 import uniffi.ide_core.SelectUnit
 import uniffi.ide_core.TabInfo
@@ -59,13 +72,15 @@ class IdeViewModel(app: Application) : AndroidViewModel(app) {
     // ---- layout state -------------------------------------------------
     var outputTab by mutableStateOf(OutputTab.Output)
     var panelSnap by mutableStateOf(PanelSnap.Normal)
+    /** Landscape: width of the output panel as a fraction of the screen. */
+    var panelWidthFraction by mutableStateOf(0.33f)
     var keyboardMode by mutableStateOf(KeyboardMode.System)
     var selectMode by mutableStateOf(false)
     var peeking by mutableStateOf(false)
     var terminalFocused by mutableStateOf(false)
     var overlay by mutableStateOf<Overlay?>(null)
 
-    enum class Overlay { Files, Find, Customize, AutoFold, NewFile, Git, Packages }
+    enum class Overlay { Files, Find, Customize, AutoFold, NewFile, Git, Packages, Preview, NewProject }
 
     // ---- output -------------------------------------------------------
     val output = mutableStateListOf<OutLine>()
@@ -97,8 +112,23 @@ class IdeViewModel(app: Application) : AndroidViewModel(app) {
     var lastRunFailed by mutableStateOf(false)
     var message by mutableStateOf<String?>(null)
 
-    val problemCount: Int get() = output.count { it.kind == LineKind.Error }
-    val lastError: String? get() = output.lastOrNull { it.kind == LineKind.Error }?.text
+    // ---- diagnostics, build, web preview ---------------------------------------
+    var diagnostics by mutableStateOf<List<Diagnostic>>(emptyList())
+    var building by mutableStateOf(false)
+    var lastApk by mutableStateOf<String?>(null)
+    var previewUrl by mutableStateOf<String?>(null)
+    var previewReason by mutableStateOf("")
+    /** Set to a URL that the UI should open in a Chrome Custom Tab, then cleared. */
+    var openExternal by mutableStateOf<String?>(null)
+    val webConsole = mutableStateListOf<OutLine>()
+
+    val problemCount: Int
+        get() = diagnostics.count { it.severity == Severity.ERROR }.takeIf { it > 0 }
+            ?: output.count { it.kind == LineKind.Error }
+    val lastError: String?
+        get() = diagnostics.lastOrNull { it.severity == Severity.ERROR }
+            ?.let { "${it.path}:${it.line} ${it.message}" }
+            ?: output.lastOrNull { it.kind == LineKind.Error }?.text
 
     // ---- find ---------------------------------------------------------
     var findText by mutableStateOf("")
@@ -238,6 +268,16 @@ class IdeViewModel(app: Application) : AndroidViewModel(app) {
     // ---- run / terminal -----------------------------------------------
     fun run() {
         val tab = tabs.getOrNull(activeTab) ?: return
+        val ext = tab.path.substringAfterLast('.', "")
+        // Web pages preview; project types with a build recipe build; plain scripts just run.
+        val kind = detectBuild(projectDir().absolutePath, "").kind
+        when {
+            ext in setOf("html", "htm", "css") -> { preview(); return }
+            kind == ProjectKind.WEB_STATIC && ext == "js" -> { preview(); return }
+            kind == ProjectKind.ANDROID_GRADLE || kind == ProjectKind.CARGO_GAME || kind == ProjectKind.CARGO -> {
+                build(); return
+            }
+        }
         saveNow()
         val file = tab.path
         val cmd = when (file.substringAfterLast('.', "")) {
@@ -474,6 +514,163 @@ class IdeViewModel(app: Application) : AndroidViewModel(app) {
         }
     }
 
+    // ---- project, preview and build ----------------------------------------------------
+    /** The top-level folder of the active file when it is a project, otherwise the workspace root. */
+    private fun projectDir(): File {
+        val path = tabs.getOrNull(activeTab)?.path ?: return root
+        val first = path.substringBefore('/', "")
+        if (first.isEmpty()) return root
+        val cand = File(root, first)
+        return if (detectBuild(cand.absolutePath, "").kind != ProjectKind.UNKNOWN) cand else root
+    }
+
+    private fun classify(l: String): LineKind =
+        if (l.startsWith("e: ") || l.startsWith("error", ignoreCase = true) || l.contains("error:") ||
+            l.contains("FAILED") || l.contains("Exception")) LineKind.Error else LineKind.Ok
+
+    fun logWeb(level: String, msg: String) {
+        webConsole += OutLine("[$level] $msg", if (level == "ERROR") LineKind.Error else LineKind.Ok)
+        if (webConsole.size > 1000) repeat(200) { webConsole.removeAt(0) }
+    }
+
+    fun preview() {
+        saveNow()
+        val dir = projectDir()
+        val plan = analyzePreview(dir.absolutePath)
+        if (plan.entry.isEmpty()) { message = "No HTML page to preview in '${dir.name}'"; return }
+        try {
+            val port = ServerHost.server.start(dir.absolutePath, 0u, plan.isolated, true)
+            ServerService.start(getApplication(), dir.absolutePath, plan.isolated, port.toInt())
+            val url = "http://127.0.0.1:$port/${plan.entry}"
+            previewUrl = url
+            previewReason = plan.reason
+            webConsole.clear()
+            if (plan.isolated) {
+                // Android WebView can never be cross-origin isolated: use Chrome.
+                message = "Opening in Chrome (${plan.reason})"
+                openExternal = url
+            } else {
+                overlay = Overlay.Preview
+            }
+        } catch (e: IdeException) {
+            message = err(e)
+        }
+    }
+
+    fun stopPreview() {
+        ServerHost.server.stop()
+        ServerService.stop(getApplication())
+        previewUrl = null
+        if (overlay == Overlay.Preview) overlay = null
+    }
+
+    fun build() {
+        if (building) return
+        saveNow()
+        val dir = projectDir()
+        val aapt2 = pm.pathDirs().map { File(it, "aapt2") }.firstOrNull { it.exists() }?.absolutePath ?: ""
+        val plan = detectBuild(dir.absolutePath, aapt2)
+        panelSnap = PanelSnap.Normal
+        outputTab = OutputTab.Output
+        output.clear()
+        diagnostics = emptyList()
+        lastRunFailed = false
+        lastApk = null
+        if (plan.command.isEmpty()) {
+            if (plan.previewable) preview() else output += OutLine(plan.description, LineKind.Info)
+            return
+        }
+        output += OutLine(plan.description, LineKind.Info)
+        output += OutLine("$ " + plan.command.joinToString(" "), LineKind.Command)
+        building = true
+        val prefix = dir.relativeTo(root).path
+        fun inRoot(p: String) = if (prefix.isEmpty() || p.startsWith("/")) p else "$prefix/$p"
+        viewModelScope.launch(Dispatchers.IO) {
+            val log = StringBuilder()
+            try {
+                val pb = ProcessBuilder(plan.command).directory(dir).redirectErrorStream(true)
+                applyToolEnv(pb.environment())
+                plan.env.forEach { kv -> kv.split("=", limit = 2).takeIf { it.size == 2 }?.let { pb.environment()[it[0]] = it[1] } }
+                val p = pb.start()
+                runProcess = p
+                p.inputStream.bufferedReader().forEachLine { l ->
+                    log.appendLine(l)
+                    output += OutLine(l, classify(l))
+                    if (output.size > 3000) repeat(500) { output.removeAt(0) }
+                }
+                val code = p.waitFor()
+                diagnostics = parseDiagnostics(log.toString(), dir.absolutePath).map { it.copy(path = inRoot(it.path)) }
+                if (code == 0) {
+                    output += OutLine("Build succeeded", LineKind.Ok)
+                    when (plan.kind) {
+                        ProjectKind.ANDROID_GRADLE -> findApks(dir.absolutePath).firstOrNull()?.let {
+                            lastApk = inRoot(it)
+                            output += OutLine("APK: ${lastApk}", LineKind.Info)
+                            installApk(lastApk!!)
+                        } ?: run { output += OutLine("No APK found in build/outputs", LineKind.Error) }
+                        else -> if (plan.previewable) preview()
+                    }
+                } else {
+                    lastRunFailed = true
+                    output += OutLine("Build failed (exit code $code)", LineKind.Error)
+                }
+            } catch (e: java.io.IOException) {
+                lastRunFailed = true
+                output += OutLine("Error: '${plan.command[0]}' is not installed yet (see Packages)", LineKind.Error)
+            } finally {
+                building = false
+            }
+        }
+    }
+
+    /** Hands a built APK to the system installer (silent install through Shizuku is not wired yet). */
+    fun installApk(rel: String) {
+        val app = getApplication<Application>()
+        try {
+            val uri = FileProvider.getUriForFile(app, "${app.packageName}.files", File(root, rel))
+            app.startActivity(
+                Intent(Intent.ACTION_VIEW)
+                    .setDataAndType(uri, "application/vnd.android.package-archive")
+                    .addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_ACTIVITY_NEW_TASK),
+            )
+        } catch (e: ActivityNotFoundException) {
+            message = "No installer available"
+        } catch (e: IllegalArgumentException) {
+            message = "Cannot share the APK: ${e.message}"
+        }
+    }
+
+    fun templates(): List<TemplateInfo> = projectTemplates()
+
+    fun createProject(templateId: String, name: String) {
+        try {
+            val rel = createFromTemplate(root.absolutePath, templateId, name)
+            val main = listOf("$rel/index.html", "$rel/src/main.rs").firstOrNull { File(root, it).exists() }
+            overlay = null
+            main?.let { openFile(it) }
+            bump()
+        } catch (e: IdeException) {
+            message = err(e)
+        }
+    }
+
+    /** Open [path] and put the caret at line:column (1-based), e.g. from the Problems list. */
+    fun gotoLine(path: String, line: Int, column: Int) {
+        guard {
+            val tab = ws.openFile(path)
+            activeTab = tab.toInt()
+            val lines = ws.text(tab).split("\n")
+            val li = (line - 1).coerceIn(0, lines.lastIndex)
+            var offset = 0
+            for (i in 0 until li) offset += lines[i].codePointCount(0, lines[i].length) + 1
+            offset += (column - 1).coerceIn(0, lines[li].codePointCount(0, lines[li].length))
+            ws.setCursor(tab, offset.toUInt(), false)
+            overlay = null
+            peeking = false
+            bump()
+        }
+    }
+
     // ---- actions ------------------------------------------------------
     fun perform(a: Action) {
         when (a) {
@@ -485,6 +682,8 @@ class IdeViewModel(app: Application) : AndroidViewModel(app) {
             Action.Files -> overlay = Overlay.Files
             Action.Git -> { refreshGit(); overlay = Overlay.Git }
             Action.Packages -> { refreshPackages(); overlay = Overlay.Packages }
+            Action.Preview -> preview()
+            Action.Build -> build()
             Action.CommentLine -> toggleComment()
             Action.DuplicateLine -> duplicateLine()
             Action.Terminal -> { outputTab = OutputTab.Terminal; panelSnap = PanelSnap.Normal }

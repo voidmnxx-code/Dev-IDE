@@ -50,6 +50,8 @@ fun FilesDrawer(vm: IdeViewModel) {
             Row(Modifier.fillMaxWidth().padding(bottom = 8.dp), verticalAlignment = Alignment.CenterVertically) {
                 Text("Files", color = C.Text, fontWeight = FontWeight.Bold, fontSize = 18.sp,
                     modifier = Modifier.weight(1f))
+                Chip("New project") { vm.overlay = IdeViewModel.Overlay.NewProject }
+                Box(Modifier.size(6.dp))
                 Chip("Packages") { vm.perform(dev.ide.app.Action.Packages) }
             }
             val rows = remember(vm.version, expanded) { flatten(vm, "", 0, expanded) }

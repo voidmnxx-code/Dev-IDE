@@ -68,7 +68,7 @@ fun OutputPanel(
             when (vm.outputTab) {
                 OutputTab.Output -> LinesView(vm.output.toList())
                 OutputTab.Terminal -> TerminalView(vm)
-                OutputTab.Problems -> LinesView(vm.output.filter { it.kind == LineKind.Error })
+                OutputTab.Problems -> ProblemsView(vm)
                 OutputTab.Debug -> Placeholder("Debugger (DAP) arrives in a later phase")
                 OutputTab.Logs -> Placeholder("logcat viewer arrives in a later phase")
             }

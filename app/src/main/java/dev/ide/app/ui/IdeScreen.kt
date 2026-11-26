@@ -4,6 +4,13 @@ import android.content.res.Configuration
 import androidx.compose.animation.core.animateDpAsState
 import androidx.compose.animation.core.tween
 import androidx.compose.foundation.background
+import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.draw.clip
+import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.gestures.detectHorizontalDragGestures
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxWithConstraints
@@ -58,6 +65,19 @@ fun IdeScreen(vm: IdeViewModel) {
     val terminalActive = vm.outputTab == OutputTab.Terminal
     val keyboard = LocalSoftwareKeyboardController.current
     val editorFocus = remember { FocusRequester() }
+    val context = androidx.compose.ui.platform.LocalContext.current
+
+    // Isolated web projects (SharedArrayBuffer / wasm threads) can only run in Chrome.
+    LaunchedEffect(vm.openExternal) {
+        val url = vm.openExternal ?: return@LaunchedEffect
+        vm.openExternal = null
+        try {
+            androidx.browser.customtabs.CustomTabsIntent.Builder().build()
+                .launchUrl(context, android.net.Uri.parse(url))
+        } catch (_: android.content.ActivityNotFoundException) {
+            vm.message = "No browser available to open $url"
+        }
+    }
 
     // ---- state machine (spec §3) -------------------------------------
     val foldAllowed = when (vm.settings.foldMode) {
@@ -100,6 +120,8 @@ fun IdeScreen(vm: IdeViewModel) {
             IdeViewModel.Overlay.AutoFold -> AutoFoldScreen(vm)
             IdeViewModel.Overlay.Git -> GitScreen(vm)
             IdeViewModel.Overlay.Packages -> PackagesScreen(vm)
+            IdeViewModel.Overlay.Preview -> PreviewScreen(vm)
+            IdeViewModel.Overlay.NewProject -> NewProjectScreen(vm)
             else -> Unit
         }
 
@@ -156,28 +178,101 @@ private fun PortraitBody(
     }
 }
 
+/** Width fractions the divider magnets to while dragging (spec §4, rotated for landscape). */
+private val LandscapeSnaps = floatArrayOf(0.33f, 0.6f)
+private const val FoldBelow = 0.12f
+
 @Composable
 private fun LandscapeBody(vm: IdeViewModel, showFolded: Boolean, typing: Boolean, focus: FocusRequester) {
-    Row(Modifier.fillMaxSize()) {
-        if (!showFolded) {
-            OutputPanel(vm, Modifier.fillMaxWidth(0.33f).fillMaxHeight(), vertical = false)
-            Box(Modifier.width(1.dp).fillMaxHeight().background(C.Key))
-        }
-        Column(Modifier.weight(1f).fillMaxHeight()) {
-            FileTabs(vm) {
-                // Folded: latest error sits in the tab row (spec §10).
-                if (showFolded) vm.lastError?.let {
-                    Text(
-                        it, color = C.Error, fontSize = 13.sp,
-                        modifier = Modifier.clickable(enabled = vm.settings.tapFoldToPeek) { vm.peeking = !vm.peeking }
-                            .padding(horizontal = 10.dp),
-                        maxLines = 1,
-                    )
+    BoxWithConstraints(Modifier.fillMaxSize()) {
+        val totalWidth = maxWidth
+        val totalPx = with(LocalDensity.current) { totalWidth.toPx() }
+        var dragging by remember { mutableStateOf(false) }
+        var live by remember { mutableFloatStateOf(vm.panelWidthFraction) }
+        LaunchedEffect(vm.panelWidthFraction) { if (!dragging) live = vm.panelWidthFraction }
+
+        Row(Modifier.fillMaxSize()) {
+            if (!showFolded) {
+                OutputPanel(vm, Modifier.width(totalWidth * live).fillMaxHeight(), vertical = false)
+                // Vertical drag handle: moves the output/editor boundary left and right.
+                Box(
+                    Modifier.width(MinTouch).fillMaxHeight().background(C.Panel)
+                        .semantics { contentDescription = "Resize output panel" }
+                        .pointerInput(totalPx) {
+                            detectHorizontalDragGestures(
+                                onDragStart = { dragging = true },
+                                onDragEnd = {
+                                    dragging = false
+                                    settleLandscape(vm, live) { live = it }
+                                },
+                                onDragCancel = {
+                                    dragging = false
+                                    settleLandscape(vm, live) { live = it }
+                                },
+                            ) { change, dx ->
+                                change.consume()
+                                live = (live + dx / totalPx).coerceIn(0.05f, 0.8f)
+                            }
+                        },
+                    contentAlignment = Alignment.Center,
+                ) {
+                    Box(Modifier.width(1.dp).fillMaxHeight().background(C.Key))
+                    Box(Modifier.size(width = 5.dp, height = 56.dp).clip(CircleShape).background(C.Muted))
+                }
+            } else {
+                // Folded: a slim handle to bring the panel back (tap, or drag to the right).
+                Box(
+                    Modifier.width(MinTouch).fillMaxHeight().background(C.Bar)
+                        .semantics { contentDescription = "Open output panel" }
+                        .clickable {
+                            if (vm.panelSnap == PanelSnap.Folded) vm.panelSnap = PanelSnap.Normal
+                            else vm.peeking = !vm.peeking
+                        }
+                        .pointerInput(Unit) {
+                            detectHorizontalDragGestures { change, dx ->
+                                change.consume()
+                                if (dx > 6f && vm.panelSnap == PanelSnap.Folded) vm.panelSnap = PanelSnap.Normal
+                            }
+                        },
+                    contentAlignment = Alignment.Center,
+                ) {
+                    if (vm.settings.redDotOnFold && vm.lastError != null) {
+                        Box(Modifier.size(10.dp).clip(CircleShape).background(C.Error))
+                    } else {
+                        Box(Modifier.size(width = 5.dp, height = 56.dp).clip(CircleShape).background(C.Muted))
+                    }
                 }
             }
-            EditorArea(vm, showFolded, typing, focus, Modifier.weight(1f))
+            Column(Modifier.weight(1f).fillMaxHeight()) {
+                FileTabs(vm) {
+                    // Folded: latest error sits in the tab row (spec §10).
+                    if (showFolded) vm.lastError?.let {
+                        Text(
+                            it, color = C.Error, fontSize = 13.sp,
+                            modifier = Modifier.clickable(enabled = vm.settings.tapFoldToPeek) { vm.peeking = !vm.peeking }
+                                .padding(horizontal = 10.dp),
+                            maxLines = 1,
+                        )
+                    }
+                }
+                EditorArea(vm, showFolded, typing, focus, Modifier.weight(1f))
+            }
         }
     }
+}
+
+/** Called when the drag ends: fold if dragged to the edge, magnet to a snap point if close. */
+private fun settleLandscape(vm: IdeViewModel, value: Float, setLive: (Float) -> Unit) {
+    if (value < FoldBelow) {
+        vm.panelSnap = PanelSnap.Folded
+        setLive(vm.panelWidthFraction) // keep the previous width for when it is reopened
+        return
+    }
+    val near = LandscapeSnaps.minBy { abs(it - value) }
+    val final = if (abs(near - value) < 0.05f) near else value
+    vm.panelWidthFraction = final
+    vm.panelSnap = PanelSnap.Normal
+    setLive(final)
 }
 
 @Composable

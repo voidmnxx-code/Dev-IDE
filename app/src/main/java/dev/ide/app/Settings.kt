@@ -11,11 +11,25 @@ enum class Action(val label: String) {
     GoToDefinition("Go to definition"), CommentLine("Comment line"),
     DuplicateLine("Duplicate line"), Format("Format"),
     Save("Save"), Focus("Focus"), Redo("Redo"), Terminal("Terminal"), Packages("Packages"),
+    Preview("Preview"), Build("Build"),
 }
 
 /** All user-tweakable behaviour from the Auto-fold and Customize screens. */
 class Settings(context: Context) {
     private val prefs = context.getSharedPreferences("ide_settings", Context.MODE_PRIVATE)
+
+    init {
+        // Phase 3 added Preview and Build: put them in layer 2 for users who already saved a layout.
+        if (prefs.getInt("actionsVersion", 0) < 3) {
+            if (prefs.getString("layer2", null) != null) {
+                val l1 = layer1
+                val l2 = layer2.toMutableList()
+                listOf(Action.Preview, Action.Build).forEach { if (it !in l1 && it !in l2) l2 += it }
+                layer2 = l2
+            }
+            prefs.edit().putInt("actionsVersion", 3).apply()
+        }
+    }
 
     var foldMode: FoldMode
         get() = FoldMode.valueOf(prefs.getString("foldMode", FoldMode.Always.name)!!)
@@ -36,7 +50,7 @@ class Settings(context: Context) {
             "layer2",
             listOf(
                 Action.Debug, Action.Files, Action.Git, Action.Replace,
-                Action.GoToDefinition, Action.CommentLine, Action.DuplicateLine, Action.Format,
+                Action.GoToDefinition, Action.CommentLine, Action.DuplicateLine, Action.Format, Action.Preview, Action.Build,
             ),
         )
         set(v) = writeList("layer2", v)

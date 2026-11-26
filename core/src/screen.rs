@@ -12,6 +12,8 @@ pub struct Screen {
     params: String,
     /// Bytes of an incomplete UTF-8 sequence carried between reads.
     pending: Vec<u8>,
+    /// Terminal width in columns; 0 = unlimited. Text wraps when it is exceeded.
+    cols: usize,
 }
 
 #[derive(PartialEq)]
@@ -41,7 +43,13 @@ impl Screen {
             state: State::Normal,
             params: String::new(),
             pending: Vec::new(),
+            cols: 0,
         }
+    }
+
+    /// Tell the screen how wide the terminal is, so long lines wrap like on a real terminal.
+    pub fn set_cols(&mut self, cols: usize) {
+        self.cols = cols;
     }
 
     pub fn lines(&self) -> Vec<String> {
@@ -135,6 +143,11 @@ impl Screen {
     }
 
     fn write_char(&mut self, c: char) {
+        // Deferred wrap: a full line only wraps when another character arrives.
+        if self.cols > 0 && self.col >= self.cols {
+            self.row += 1;
+            self.col = 0;
+        }
         self.ensure_row();
         let line = &mut self.lines[self.row];
         while line.len() < self.col {
@@ -289,6 +302,23 @@ mod tests {
         let mut s = Screen::new();
         s.feed(b"abc\x1b[2D\x1b[P");
         assert_eq!(text(&s), "ac");
+    }
+
+    #[test]
+    fn long_lines_wrap_at_the_terminal_width() {
+        let mut s = Screen::new();
+        s.set_cols(5);
+        s.feed(b"abcdefgh");
+        assert_eq!(s.lines(), vec!["abcde", "fgh"]);
+        assert_eq!(s.cursor(), (1, 3));
+    }
+
+    #[test]
+    fn exactly_full_line_followed_by_crlf_does_not_add_a_blank_line() {
+        let mut s = Screen::new();
+        s.set_cols(5);
+        s.feed(b"abcde\r\nxy");
+        assert_eq!(s.lines(), vec!["abcde", "xy"]);
     }
 
     #[test]

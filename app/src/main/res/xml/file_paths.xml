@@ -1,0 +1,5 @@
+<?xml version="1.0" encoding="utf-8"?>
+<paths>
+    <!-- Built APKs live inside projects/; shared with the system installer through FileProvider. -->
+    <files-path name="projects" path="projects/" />
+</paths>
