@@ -36,7 +36,18 @@ catalog you host anywhere (a GitHub raw file works). Point **Packages → Catalo
 Archives must contain binaries built for **aarch64 / Android (Bionic)**. Downloaded archives stay in
 the cache so a package can be reinstalled without a network.
 
-No catalog ships with the app: only you can vouch for the binaries you point it at.
+## Shared-prefix packages (the default catalog)
+
+Entries with `"prefix": true` are extracted into one shared directory,
+`/data/data/dev.ide.app.full/usr`, like a Linux distribution, so libraries are shared between tools.
+They may also declare `"deps": [ids]` (installed first, in order) and `"hidden": true` (a library that is
+only installed as a dependency). Uninstalling removes exactly the files the package installed.
+
+The default catalog is built by the **Build language packs** workflow (`tools/packs/build_packs.py`): it takes
+Termux's aarch64 packages, verifies them against Termux's own checksums, rewrites the hard-coded
+`/data/data/com.termux/files` prefix to `/data/data/dev.ide.app.full` (the same byte length, so binaries stay valid),
+and publishes the archives and `catalog.json` as assets of the `packs` release. The app loads
+`https://github.com/<owner>/Dev-IDE/releases/download/packs/catalog.json` by default; you can point it anywhere.
 
 ## Why there are two builds
 

@@ -155,13 +155,13 @@ fun PackagesScreen(vm: IdeViewModel) {
             }
 
             Section("PACKAGES")
-            if (vm.packages.isEmpty()) {
+            if (vm.packages.none { !it.hidden }) {
                 Text(
                     "No packages yet. Load a catalog (see docs/packages.md for the format).",
                     color = C.Muted, modifier = Modifier.padding(horizontal = 16.dp),
                 )
             }
-            vm.packages.forEach { p ->
+            vm.packages.filter { !it.hidden }.forEach { p ->
                 val busy = vm.pkgBusy == p.id
                 Column(
                     Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 4.dp)

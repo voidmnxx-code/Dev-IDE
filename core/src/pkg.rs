@@ -36,6 +36,15 @@ pub struct Entry {
     pub size: u64,
     #[serde(default)]
     pub description: String,
+    /// Catalog ids that must be installed first (resolved by [`Store::plan`]).
+    #[serde(default)]
+    pub deps: Vec<String>,
+    /// Library packages that are only installed as dependencies; the UI hides them.
+    #[serde(default)]
+    pub hidden: bool,
+    /// Extract into the shared prefix (Termux-style layout) instead of a private folder.
+    #[serde(default)]
+    pub prefix: bool,
 }
 
 fn default_format() -> String {
@@ -77,20 +86,76 @@ fn validate_id(id: &str) -> Result<(), IdeError> {
 pub struct Installed {
     pub id: String,
     pub version: String,
+    #[serde(default)]
+    pub prefix: bool,
     pub bin: Vec<String>,
     pub env: BTreeMap<String, String>,
 }
 
 pub struct Store {
     root: PathBuf,
+    /// Shared install prefix for `prefix: true` packages (binaries are built for this exact path).
+    prefix: PathBuf,
 }
 
 impl Store {
     pub fn new(root: &Path) -> Result<Store, IdeError> {
-        for d in ["cache", "pkgs", "installed"] {
+        Self::with_prefix(root, &root.join("usr"))
+    }
+
+    pub fn with_prefix(root: &Path, prefix: &Path) -> Result<Store, IdeError> {
+        for d in ["cache", "pkgs", "installed", "manifests"] {
             fs::create_dir_all(root.join(d))?;
         }
-        Ok(Store { root: root.to_path_buf() })
+        fs::create_dir_all(prefix)?;
+        Ok(Store { root: root.to_path_buf(), prefix: prefix.to_path_buf() })
+    }
+
+    pub fn prefix_dir(&self) -> &Path {
+        &self.prefix
+    }
+
+    /// Install order for `id`: not-yet-installed dependencies first, then `id` itself.
+    pub fn plan(&self, id: &str) -> Result<Vec<String>, IdeError> {
+        let catalog = self.load_catalog()?;
+        let installed: Vec<String> = self.installed().into_iter().map(|i| i.id).collect();
+        let mut order = Vec::new();
+        let mut visiting = Vec::new();
+        fn visit(
+            id: &str,
+            catalog: &[Entry],
+            installed: &[String],
+            order: &mut Vec<String>,
+            visiting: &mut Vec<String>,
+        ) -> Result<(), IdeError> {
+            if order.iter().any(|o| o == id) || installed.iter().any(|i| i == id) {
+                return Ok(());
+            }
+            if visiting.iter().any(|v| v == id) {
+                return Err(IdeError::Package(format!("dependency cycle at '{id}'")));
+            }
+            let e = catalog
+                .iter()
+                .find(|e| e.id == id)
+                .ok_or_else(|| IdeError::Package(format!("'{id}' is not in the catalog")))?;
+            visiting.push(id.to_string());
+            for d in &e.deps {
+                visit(d, catalog, installed, order, visiting)?;
+            }
+            visiting.pop();
+            order.push(id.to_string());
+            Ok(())
+        }
+        visit(id, &catalog, &installed, &mut order, &mut visiting)?;
+        // The requested package is reinstalled even if it is already present.
+        if !order.iter().any(|o| o == id) {
+            order.push(id.to_string());
+        }
+        Ok(order)
+    }
+
+    fn dir_of(&self, p: &Installed) -> PathBuf {
+        if p.prefix { self.prefix.clone() } else { self.install_dir(&p.id) }
     }
 
     pub fn catalog_path(&self) -> PathBuf {
@@ -165,10 +230,27 @@ impl Store {
             return Err(err);
         }
 
-        let dest = self.install_dir(id);
-        let _ = fs::remove_dir_all(&dest);
-        fs::rename(&tmp, &dest)?;
-        let rec = Installed { id: e.id.clone(), version: e.version.clone(), bin: e.bin.clone(), env: e.env.clone() };
+        if e.prefix {
+            self.remove_manifest_files(id);
+            let mut files = Vec::new();
+            merge_into(&tmp, &self.prefix, Path::new(""), &mut files)?;
+            let _ = fs::remove_dir_all(&tmp);
+            fs::write(
+                self.root.join("manifests").join(format!("{id}.txt")),
+                files.iter().map(|f| f.to_string_lossy().into_owned()).collect::<Vec<_>>().join("\n"),
+            )?;
+        } else {
+            let dest = self.install_dir(id);
+            let _ = fs::remove_dir_all(&dest);
+            fs::rename(&tmp, &dest)?;
+        }
+        let rec = Installed {
+            id: e.id.clone(),
+            version: e.version.clone(),
+            prefix: e.prefix,
+            bin: e.bin.clone(),
+            env: e.env.clone(),
+        };
         fs::write(
             self.root.join("installed").join(format!("{id}.json")),
             serde_json::to_string_pretty(&rec).unwrap(),
@@ -178,9 +260,36 @@ impl Store {
 
     pub fn uninstall(&self, id: &str) -> Result<(), IdeError> {
         validate_id(id)?;
+        self.remove_manifest_files(id);
         let _ = fs::remove_dir_all(self.install_dir(id));
         let _ = fs::remove_file(self.root.join("installed").join(format!("{id}.json")));
         Ok(())
+    }
+
+    /// Delete the files a prefix package put into the shared prefix.
+    fn remove_manifest_files(&self, id: &str) {
+        let mf = self.root.join("manifests").join(format!("{id}.txt"));
+        if let Ok(text) = fs::read_to_string(&mf) {
+            let mut dirs = Vec::new();
+            for rel in text.lines().filter(|l| !l.is_empty()) {
+                let Ok(Some(rel)) = safe_member_path(Path::new(rel), 0) else { continue };
+                let p = self.prefix.join(&rel);
+                let _ = fs::remove_file(&p);
+                if let Some(d) = rel.parent() {
+                    dirs.push(d.to_path_buf());
+                }
+            }
+            // Remove directories that became empty, deepest first.
+            dirs.sort_by_key(|d| std::cmp::Reverse(d.components().count()));
+            dirs.dedup();
+            for d in dirs {
+                let mut cur = d;
+                while !cur.as_os_str().is_empty() && fs::remove_dir(self.prefix.join(&cur)).is_ok() {
+                    cur = cur.parent().map(Path::to_path_buf).unwrap_or_default();
+                }
+            }
+            let _ = fs::remove_file(mf);
+        }
     }
 
     pub fn remove_cache(&self, id: &str) -> Result<(), IdeError> {
@@ -195,7 +304,7 @@ impl Store {
         self.installed()
             .iter()
             .flat_map(|p| {
-                let base = self.install_dir(&p.id);
+                let base = self.dir_of(p);
                 p.bin.iter().map(move |b| base.join(b).to_string_lossy().into_owned())
             })
             .collect()
@@ -206,11 +315,40 @@ impl Store {
         self.installed()
             .iter()
             .flat_map(|p| {
-                let dir = self.install_dir(&p.id).to_string_lossy().into_owned();
+                let dir = self.dir_of(p).to_string_lossy().into_owned();
                 p.env.iter().map(move |(k, v)| format!("{k}={}", v.replace("{dir}", &dir)))
             })
             .collect()
     }
+}
+
+/// Move everything under `src` into `dst`, merging directories and replacing files.
+/// Records each moved file/symlink (relative to the prefix) in `out`.
+fn merge_into(src: &Path, dst: &Path, rel: &Path, out: &mut Vec<PathBuf>) -> Result<(), IdeError> {
+    fs::create_dir_all(dst.join(rel))?;
+    for entry in fs::read_dir(src.join(rel))? {
+        let entry = entry?;
+        let r = rel.join(entry.file_name());
+        let meta = fs::symlink_metadata(entry.path())?;
+        if meta.is_dir() {
+            merge_into(src, dst, &r, out)?;
+        } else {
+            let to = dst.join(&r);
+            let _ = fs::remove_file(&to);
+            if fs::rename(entry.path(), &to).is_err() {
+                // Different filesystem: copy (symlinks recreated).
+                #[cfg(unix)]
+                if meta.file_type().is_symlink() {
+                    std::os::unix::fs::symlink(fs::read_link(entry.path())?, &to)?;
+                    out.push(r);
+                    continue;
+                }
+                fs::copy(entry.path(), &to)?;
+            }
+            out.push(r);
+        }
+    }
+    Ok(())
 }
 
 pub fn sha256_file(path: &Path) -> Result<String, IdeError> {
@@ -410,6 +548,70 @@ mod tests {
         assert!(store.archive_path(&e).exists(), "uninstall keeps the cached archive for offline reinstall");
         store.install("demo").unwrap(); // offline reinstall from cache
         assert_eq!(store.installed().len(), 1);
+    }
+
+    fn tgz(path: &Path, files: &[(&str, &str, u32)]) -> String {
+        let gz = flate2::write::GzEncoder::new(File::create(path).unwrap(), flate2::Compression::fast());
+        let mut b = tar::Builder::new(gz);
+        for (name, body, mode) in files {
+            let mut h = tar::Header::new_gnu();
+            h.set_size(body.len() as u64);
+            h.set_mode(*mode);
+            h.set_cksum();
+            b.append_data(&mut h, name, body.as_bytes()).unwrap();
+        }
+        b.into_inner().unwrap().finish().unwrap();
+        sha256_file(path).unwrap()
+    }
+
+    #[test]
+    fn prefix_packages_share_a_prefix_resolve_deps_and_uninstall_cleanly() {
+        let tmp = tempfile::tempdir().unwrap();
+        let prefix = tmp.path().join("u");
+        let store = Store::with_prefix(&tmp.path().join("packages"), &prefix).unwrap();
+        let (a, b) = (tmp.path().join("libfoo.tgz"), tmp.path().join("tool.tgz"));
+        let sha_a = tgz(&a, &[("lib/libfoo.so", "lib", 0o644), ("share/foo/data", "d", 0o644)]);
+        let sha_b = tgz(&b, &[("bin/tool", "#!/bin/sh\necho tool-ok\n", 0o755)]);
+        let cat = format!(
+            r#"{{"version":1,"packages":[
+            {{"id":"libfoo","name":"libfoo","version":"1","url":"u","sha256":"{sha_a}","prefix":true,"hidden":true}},
+            {{"id":"tool","name":"Tool","version":"1","url":"u","sha256":"{sha_b}","prefix":true,
+              "deps":["libfoo"],"bin":["bin"],"env":{{"TOOL_HOME":"{{dir}}"}}}}]}}"#
+        );
+        store.save_catalog(&cat).unwrap();
+        assert_eq!(store.plan("tool").unwrap(), vec!["libfoo", "tool"]);
+        for (id, src) in [("libfoo", &a), ("tool", &b)] {
+            fs::copy(src, store.archive_path(&store.find(id).unwrap())).unwrap();
+            store.install(id).unwrap();
+        }
+        assert!(prefix.join("lib/libfoo.so").exists());
+        let out = std::process::Command::new(prefix.join("bin/tool")).output().unwrap();
+        assert_eq!(String::from_utf8_lossy(&out.stdout).trim(), "tool-ok");
+        assert_eq!(store.path_dirs(), vec![prefix.join("bin").to_string_lossy().to_string()]);
+        assert_eq!(store.extra_env(), vec![format!("TOOL_HOME={}", prefix.display())]);
+        assert_eq!(store.plan("tool").unwrap(), vec!["tool"], "installed deps are skipped");
+
+        store.uninstall("tool").unwrap();
+        assert!(!prefix.join("bin/tool").exists());
+        assert!(!prefix.join("bin").exists(), "empty directories are cleaned up");
+        assert!(prefix.join("lib/libfoo.so").exists(), "other packages are untouched");
+        store.uninstall("libfoo").unwrap();
+        assert!(!prefix.join("share").exists());
+    }
+
+    #[test]
+    fn dependency_cycles_and_unknown_deps_are_errors() {
+        let tmp = tempfile::tempdir().unwrap();
+        let store = Store::new(&tmp.path().join("p")).unwrap();
+        let sha = "a".repeat(64);
+        let cat = format!(
+            r#"{{"packages":[{{"id":"a","name":"A","version":"1","url":"u","sha256":"{sha}","deps":["b"]}},
+                             {{"id":"b","name":"B","version":"1","url":"u","sha256":"{sha}","deps":["a"]}},
+                             {{"id":"c","name":"C","version":"1","url":"u","sha256":"{sha}","deps":["zzz"]}}]}}"#
+        );
+        store.save_catalog(&cat).unwrap();
+        assert!(store.plan("a").unwrap_err().to_string().contains("cycle"));
+        assert!(store.plan("c").unwrap_err().to_string().contains("not in the catalog"));
     }
 
     #[test]

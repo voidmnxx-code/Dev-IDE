@@ -32,7 +32,10 @@ import uniffi.ide_core.Language
 /** Languages: built-in and user-defined, each with a one-tap toolchain install. */
 @Composable
 fun LanguagesScreen(vm: IdeViewModel) {
-    LaunchedEffect(Unit) { vm.refreshLanguages() }
+    LaunchedEffect(Unit) {
+        vm.refreshLanguages()
+        if (BuildConfig.FULL && vm.packages.isEmpty() && vm.settings.catalogUrl.isNotBlank()) vm.loadCatalog(vm.settings.catalogUrl)
+    }
     var editing by remember { mutableStateOf<Language?>(null) }
 
     Column(Modifier.fillMaxSize().background(C.Bg).statusBarsPadding().verticalScroll(rememberScrollState())) {
@@ -52,7 +55,7 @@ fun LanguagesScreen(vm: IdeViewModel) {
         Section("LANGUAGES")
         vm.langs.forEach { l ->
             val miss = vm.missingFor(l)
-            val busy = vm.pkgBusy != null && vm.pkgBusy in l.packages
+            val busy = vm.pkgBusy != null && miss.isNotEmpty()
             Column(
                 Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 4.dp)
                     .clip(RoundedCornerShape(14.dp)).background(C.Bar).padding(14.dp),

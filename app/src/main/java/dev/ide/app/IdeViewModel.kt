@@ -61,7 +61,7 @@ class IdeViewModel(app: Application) : AndroidViewModel(app) {
     val settings = Settings(app)
     private val root = File(app.filesDir, "projects/demo")
     private val ws: Workspace
-    private val pm = PackageManager(File(app.filesDir, "packages").absolutePath)
+    private val pm = PackageManager(File(app.filesDir, "packages").absolutePath, "/data/data/${app.packageName}/usr")
 
     /** Bumped after every buffer change so Compose re-reads text/cursor. */
     var version by mutableIntStateOf(0)
@@ -539,26 +539,28 @@ class IdeViewModel(app: Application) : AndroidViewModel(app) {
         viewModelScope.launch(Dispatchers.IO) { installOne(id) }
     }
 
+    /** Installs `id` and any missing dependencies (downloads first unless cached). Blocking. */
     private fun installOne(id: String) {
-        kotlin.run {
-            pkgBusy = id; pkgProgress = 0f
-            try {
-                val info = pm.packages().first { it.id == id }
+        pkgBusy = id; pkgProgress = 0f
+        try {
+            for (step in pm.installPlan(id)) {
+                pkgBusy = step; pkgProgress = 0f
+                val info = pm.packages().first { it.id == step }
                 if (!info.cached) {
                     pkgStatus = "Downloading ${info.name}…"
-                    download(pm.downloadUrl(id), File(pm.archivePath(id)))
+                    download(pm.downloadUrl(step), File(pm.archivePath(step)))
                 }
                 pkgStatus = "Installing ${info.name}…"
-                pm.install(id)
-                pkgStatus = "${info.name} installed"
-            } catch (e: IdeException) {
-                pkgStatus = err(e)
-            } catch (e: java.io.IOException) {
-                pkgStatus = "Download failed: ${e.message}"
-            } finally {
-                pkgBusy = null
-                refreshPackages()
+                pm.install(step)
             }
+            pkgStatus = "${pm.packages().firstOrNull { it.id == id }?.name ?: id} installed"
+        } catch (e: IdeException) {
+            pkgStatus = err(e)
+        } catch (e: java.io.IOException) {
+            pkgStatus = "Download failed: ${e.message}"
+        } finally {
+            pkgBusy = null
+            refreshPackages()
         }
     }
 

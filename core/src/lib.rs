@@ -509,6 +509,8 @@ pub struct PackageInfo {
     pub size: u64,
     pub installed: bool,
     pub installed_version: Option<String>,
+    /// Library packages the UI should not list on their own.
+    pub hidden: bool,
     /// The archive is already on disk, so (re)installing works offline.
     pub cached: bool,
 }
@@ -522,8 +524,10 @@ pub struct PackageManager {
 #[uniffi::export]
 impl PackageManager {
     #[uniffi::constructor]
-    pub fn new(root: String) -> Result<Self, IdeError> {
-        Ok(PackageManager { store: pkg::Store::new(std::path::Path::new(&root))? })
+    pub fn new(root: String, prefix: String) -> Result<Self, IdeError> {
+        Ok(PackageManager {
+            store: pkg::Store::with_prefix(std::path::Path::new(&root), std::path::Path::new(&prefix))?,
+        })
     }
 
     /// Replace the catalog (validated first). Returns the number of packages.
@@ -543,6 +547,7 @@ impl PackageManager {
                     cached: self.store.archive_path(&e).exists(),
                     installed: inst.is_some(),
                     installed_version: inst.map(|i| i.version.clone()),
+                    hidden: e.hidden,
                     id: e.id,
                     name: e.name,
                     version: e.version,
@@ -565,6 +570,16 @@ impl PackageManager {
 
     pub fn install(&self, id: String) -> Result<(), IdeError> {
         self.store.install(&id)
+    }
+
+    /// Ids to download and install, in order: missing dependencies first, then `id`.
+    pub fn install_plan(&self, id: String) -> Result<Vec<String>, IdeError> {
+        self.store.plan(&id)
+    }
+
+    /// Shared prefix directory that Termux-style packages are built for.
+    pub fn prefix_dir(&self) -> String {
+        self.store.prefix_dir().to_string_lossy().into_owned()
     }
 
     pub fn uninstall(&self, id: String) -> Result<(), IdeError> {

@@ -45,7 +45,7 @@ class Settings(context: Context) {
     var gitName by str("gitName", "")
     var gitEmail by str("gitEmail", "")
     var gitToken by str("gitToken", "")
-    var catalogUrl by str("catalogUrl", "")
+    var catalogUrl by str("catalogUrl", "https://github.com/voidmnxx-code/Dev-IDE/releases/download/packs/catalog.json")
 
     var longPressAction: Action
         get() = Action.valueOf(prefs.getString("longPress", Action.Run.name)!!)
