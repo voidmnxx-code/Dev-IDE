@@ -6,20 +6,25 @@ A native, offline-capable development environment for Android, written in
 design spec (type-first layout, auto-folding output panel with Peek, floating
 `^` action button, extra-keys row, cursor/selection pad).
 
-## Status — Phase 2
+## Status — Phase 3
+
+Everything from phase 2 (editor, PTY terminal, tree-sitter colours, hybrid Git, package manager) plus:
 
 | Area | State |
 | --- | --- |
-| Rust text buffer, undo/redo, selection, smart pairs, find/replace, autosave | done, tested |
-| **Real terminal**: PTY shell (`portable-pty`) + small ANSI/UTF-8 screen model, Ctrl/Esc/arrows row | done, tested on Linux host |
-| **Syntax highlighting**: tree-sitter for JS, Python, Rust, JSON, Kotlin, HTML, CSS, Bash, TOML | done, tested |
-| **Git (hybrid)**: gitoxide for status/branch/log; `git` binary for stage/commit/push/pull | done, tested against a local remote |
-| **Package manager**: JSON catalog, SHA-256 check, tar.gz/zip extraction, offline reinstall, PATH/env | done, tested (no catalog ships) |
-| Compose UI for all of the above (terminal tab, coloured editor, Git screen, Packages screen) | compiles in CI; **not yet run on a device** |
-| LSP, DAP, Android/web/game build pipelines, cross-export | phases 3–4 |
+| **Landscape**: draggable left/right divider for the output panel (magnets, fold at the edge); terminal lines wrap at the terminal width | done |
+| **Local web server** (Rust, loopback only): MIME incl. `application/wasm`, path-traversal protection, live reload, optional COOP/COEP | done, tested |
+| **Preview**: in-app WebView with JS console; projects that need `SharedArrayBuffer` / threaded wasm open in Chrome Custom Tabs automatically (override with `.ide-preview.json`) | done |
+| **Foreground service** (specialUse, sticky) keeps the server alive and restores it on the same port | done |
+| **Build plans**: Android/Gradle (passes native `aapt2` via `android.aapt2FromMavenOverride`), Cargo, Rust games for wasm, Node, static web | done, tested |
+| **Problems list**: rustc / kotlinc / javac / gcc output parsed into tappable errors | done, tested |
+| **APK install** through the system installer (FileProvider) | done |
+| **Project templates**: web, Macroquad, Bevy (wasm) | done, tested |
+| Everything above in the UI | compiles in CI (both flavors); phase-3 screens not yet run on a device |
 
-Two APK flavors are built: **store** (targetSdk 35, no package manager) and **full**
-(targetSdk 28, package manager on; see `docs/packages.md` for why).
+Not included yet: native aarch64 `aapt2`, Gradle, JDK, NDK and the Rust toolchain are not bundled
+(add them through a package catalog, see `docs/packages.md`; the build plans look for `aapt2` in
+installed packages); silent install via Shizuku / wireless ADB; logcat viewer; DAP debugger; LSP.
 
 ## Layout
 
@@ -34,7 +39,7 @@ Prerequisites: JDK 17, Android SDK (API 35), Android NDK, Rust with the
 `aarch64-linux-android` target, and `cargo install cargo-ndk`.
 
 ```
-cargo test                 # Rust core tests (47, no Android needed)
+cargo test                 # Rust core tests (70, no Android needed)
 ./gradlew assembleDebug    # cross-compiles the core, generates bindings, builds the APK
 ```
 
