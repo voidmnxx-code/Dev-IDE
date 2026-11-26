@@ -34,6 +34,7 @@ import androidx.compose.ui.input.key.key
 import androidx.compose.ui.input.key.onPreviewKeyEvent
 import androidx.compose.ui.input.key.type
 import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.foundation.gestures.awaitFirstDown
 import androidx.compose.ui.platform.LocalSoftwareKeyboardController
 import androidx.compose.runtime.produceState
 import androidx.compose.ui.text.AnnotatedString
@@ -95,7 +96,25 @@ fun EditorView(vm: IdeViewModel, keyboardRequest: FocusRequester, modifier: Modi
         }
     }
 
-    Box(modifier.fillMaxSize().background(C.Bg)) {
+    Box(
+        modifier.fillMaxSize().background(C.Bg).pointerInput(Unit) {
+            // Two-finger tap = undo (spec §5). Observes only; never consumes.
+            androidx.compose.foundation.gestures.awaitEachGesture {
+                val first = awaitFirstDown(requireUnconsumed = false, pass = androidx.compose.ui.input.pointer.PointerEventPass.Initial)
+                val t0 = first.uptimeMillis
+                var maxPointers = 1
+                var moved = false
+                while (true) {
+                    val ev = awaitPointerEvent(androidx.compose.ui.input.pointer.PointerEventPass.Initial)
+                    maxPointers = maxOf(maxPointers, ev.changes.count { it.pressed })
+                    if (ev.changes.any { (it.position - it.previousPosition).getDistance() > 8f && it.pressed }) moved = true
+                    if (ev.changes.none { it.pressed }) break
+                    if (ev.changes.first().uptimeMillis - t0 > 400) return@awaitEachGesture
+                }
+                if (maxPointers == 2 && !moved) vm.undo()
+            }
+        },
+    ) {
         LazyColumn(state = listState, modifier = Modifier.fillMaxSize()) {
             itemsIndexed(lines) { i, line ->
                 EditorLine(

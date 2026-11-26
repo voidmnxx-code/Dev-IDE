@@ -92,7 +92,7 @@ fun BoxScope.FloatingActions(vm: IdeViewModel, typing: Boolean, containerWidthPx
             }
         }
         Box(
-            Modifier.size(FabSize).alpha(if (typing && layer == 0) 0.7f else 1f)
+            Modifier.size(FabSize).alpha(if (layer != 0) 1f else if (onLeft) 0.55f else if (typing) 0.7f else 1f)
                 .clip(CircleShape).background(C.Accent)
                 .semantics { contentDescription = "Quick actions" }
                 .pointerInput(Unit) {

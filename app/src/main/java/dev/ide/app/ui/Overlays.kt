@@ -184,7 +184,7 @@ fun CustomizeScreen(vm: IdeViewModel) {
                 SmallBtn("↑", enabled = i > 0) { l1 = l1.toMutableList().also { it.add(i - 1, it.removeAt(i)) } }
                 SmallBtn("↓", enabled = i < l1.lastIndex) { l1 = l1.toMutableList().also { it.add(i + 1, it.removeAt(i)) } }
                 // "More" must stay reachable, otherwise layer 2 can't be opened.
-                SmallBtn("−", enabled = a != Action.More) { l1 = l1 - a; l2 = l2 + a }
+                SmallBtn("−", enabled = a != Action.More, danger = true) { l1 = l1 - a; l2 = l2 + a }
             }
         }
         Section("LAYER 2 (tap to move up)")
@@ -221,11 +221,11 @@ private fun ChipFlow(labels: List<String>, onTap: (Int) -> Unit) {
 }
 
 @Composable
-private fun SmallBtn(label: String, enabled: Boolean = true, onClick: () -> Unit) {
+private fun SmallBtn(label: String, enabled: Boolean = true, danger: Boolean = false, onClick: () -> Unit) {
     Box(
         Modifier.touchTarget().clickable(enabled = enabled, onClick = onClick),
         contentAlignment = Alignment.Center,
-    ) { Text(label, color = if (enabled) C.Accent else C.Muted.copy(alpha = 0.3f), fontSize = 20.sp) }
+    ) { Text(label, color = if (enabled) (if (danger) C.Error else C.Accent) else C.Muted.copy(alpha = 0.3f), fontSize = 20.sp) }
 }
 
 // ---------------------------------------------------------------------

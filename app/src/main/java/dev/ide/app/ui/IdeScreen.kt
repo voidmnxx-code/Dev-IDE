@@ -123,6 +123,16 @@ fun IdeScreen(vm: IdeViewModel) {
             else if (imeVisible) ExtraKeysRow(vm, terminal = terminalActive && vm.terminalFocused)
         }
 
+        // Left-edge swipe opens the file drawer (spec §5).
+        if (vm.overlay == null) Box(
+            Modifier.align(Alignment.CenterStart).width(14.dp).fillMaxHeight(0.6f)
+                .pointerInput(Unit) {
+                    detectHorizontalDragGestures { change, dx ->
+                        if (dx > 8f) { change.consume(); vm.overlay = IdeViewModel.Overlay.Files }
+                    }
+                },
+        )
+
         when (vm.overlay) {
             IdeViewModel.Overlay.Files -> FilesDrawer(vm)
             IdeViewModel.Overlay.NewFile -> NewFileDialog(vm)
