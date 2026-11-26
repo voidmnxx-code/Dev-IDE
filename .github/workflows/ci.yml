@@ -33,6 +33,18 @@ jobs:
           test -d "$ANDROID_NDK_HOME" || { echo "NDK not found"; exit 1; }
           echo "Using NDK at $ANDROID_NDK_HOME"
           ./gradlew assembleDebug --stacktrace
+      - name: Inspect APKs (16 KB page alignment, manifest facts)
+        run: |
+          AAPT2=$(ls -d "$ANDROID_HOME"/build-tools/*/aapt2 | tail -1)
+          for apk in app/build/outputs/apk/*/debug/*.apk; do
+            echo "=== $apk ($(du -h "$apk" | cut -f1))"
+            "$AAPT2" dump badging "$apk" | grep -E "^package:|^sdkVersion|^targetSdkVersion|^native-code" || true
+            d=$(mktemp -d)
+            unzip -q "$apk" 'lib/*' -d "$d" || true
+            for so in $(find "$d" -name '*.so'); do
+              echo "$(basename "$so"): LOAD p_align = $(readelf -lW "$so" | awk '/LOAD/ {print $NF}' | sort -u | tr '\n' ' ')"
+            done
+          done
       - uses: actions/upload-artifact@v4
         with:
           name: dev-ide-debug-apks
