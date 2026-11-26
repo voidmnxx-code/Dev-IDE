@@ -400,9 +400,22 @@ class IdeViewModel(app: Application) : AndroidViewModel(app) {
     private fun toolPath(): String =
         (pm.pathDirs() + (System.getenv("PATH") ?: "/system/bin:/system/xbin")).joinToString(":")
 
+    /** Variables Termux-built tools expect: a temp dir (Android has no /tmp), the prefix and terminfo. */
+    private fun sharedEnv(): Map<String, String> {
+        val prefix = pm.prefixDir()
+        val tmp = File(getApplication<Application>().cacheDir, "tmp").apply { mkdirs() }
+        return buildMap {
+            put("TMPDIR", tmp.absolutePath)
+            put("PREFIX", prefix)
+            if (File(prefix, "share/terminfo").isDirectory) put("TERMINFO", "$prefix/share/terminfo")
+            if (File(prefix, "etc/tls/cert.pem").exists()) put("SSL_CERT_FILE", "$prefix/etc/tls/cert.pem")
+        }
+    }
+
     private fun applyToolEnv(env: MutableMap<String, String>) {
         env["PATH"] = toolPath()
         env["HOME"] = root.parentFile?.absolutePath ?: root.absolutePath
+        sharedEnv().forEach { (k, v) -> env[k] = v }
         pm.extraEnv().forEach { kv -> kv.split("=", limit = 2).takeIf { it.size == 2 }?.let { env[it[0]] = it[1] } }
     }
 
@@ -414,6 +427,7 @@ class IdeViewModel(app: Application) : AndroidViewModel(app) {
                 add("TERM=xterm"); add("LANG=en_US.UTF-8")
                 add("HOME=${root.parentFile?.absolutePath ?: root.absolutePath}")
                 add("PATH=${toolPath()}")
+                sharedEnv().forEach { (k, v) -> add("$k=$v") }
                 addAll(pm.extraEnv())
             }
             term = Terminal("/system/bin/sh", emptyList(), root.absolutePath, env,
