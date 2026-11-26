@@ -1,6 +1,17 @@
 package dev.ide.app.ui
 
 import android.content.res.Configuration
+import androidx.compose.animation.AnimatedContent
+import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.core.FastOutSlowInEasing
+import androidx.compose.animation.core.snap
+import androidx.compose.animation.expandVertically
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
+import androidx.compose.animation.shrinkVertically
+import androidx.compose.animation.slideInVertically
+import androidx.compose.animation.togetherWith
+import androidx.compose.ui.draw.clipToBounds
 import androidx.compose.animation.core.animateDpAsState
 import androidx.compose.animation.core.tween
 import androidx.compose.foundation.background
@@ -119,8 +130,9 @@ fun IdeScreen(vm: IdeViewModel) {
                 else PortraitBody(vm, showFolded, typing, terminalTyping, editorFocus)
             }
             // Row above the keyboard / cursor editor.
-            if (cursorMode) CursorEditor(vm, compact = landscape)
-            else if (imeVisible) ExtraKeysRow(vm, terminal = terminalActive && vm.terminalFocused)
+            AnimatedVisibility(cursorMode, enter = expandVertically(tween(240, easing = FastOutSlowInEasing)) + fadeIn(tween(200)),
+                exit = shrinkVertically(tween(200)) + fadeOut(tween(120))) { CursorEditor(vm, compact = landscape) }
+            if (!cursorMode && imeVisible) ExtraKeysRow(vm, terminal = terminalActive && vm.terminalFocused)
         }
 
         // Left-edge swipe opens the file drawer (spec §5).
@@ -133,7 +145,15 @@ fun IdeScreen(vm: IdeViewModel) {
                 },
         )
 
-        when (vm.overlay) {
+        AnimatedContent(
+            targetState = vm.overlay,
+            modifier = Modifier.fillMaxSize(),
+            transitionSpec = {
+                (fadeIn(tween(220)) + slideInVertically(tween(260, easing = FastOutSlowInEasing)) { it / 12 }) togetherWith
+                    fadeOut(tween(140))
+            },
+            label = "overlay",
+        ) { ov -> when (ov) {
             IdeViewModel.Overlay.Files -> FilesDrawer(vm)
             IdeViewModel.Overlay.NewFile -> NewFileDialog(vm)
             IdeViewModel.Overlay.Customize -> CustomizeScreen(vm)
@@ -143,7 +163,7 @@ fun IdeScreen(vm: IdeViewModel) {
             IdeViewModel.Overlay.Preview -> PreviewScreen(vm)
             IdeViewModel.Overlay.NewProject -> NewProjectScreen(vm)
             else -> Unit
-        }
+        } }
 
         vm.message?.let { m ->
             Text(
@@ -174,13 +194,18 @@ private fun PortraitBody(
             terminalTyping -> total * 0.40f
             else -> total * vm.panelSnap.fraction
         }
-        val panelHeight by animateDpAsState(target, tween(if (dragFraction >= 0f) 0 else 200), label = "panel")
+        val panelHeight by animateDpAsState(
+            target,
+            if (dragFraction >= 0f) snap() else tween(260, easing = FastOutSlowInEasing),
+            label = "panel",
+        )
 
         Column(Modifier.fillMaxSize()) {
-            if (showFolded) FoldedLine(vm)
-            else OutputPanel(
+            AnimatedVisibility(showFolded, enter = expandVertically(tween(220)) + fadeIn(tween(220)),
+                exit = shrinkVertically(tween(220)) + fadeOut(tween(160))) { FoldedLine(vm) }
+            OutputPanel(
                 vm,
-                Modifier.fillMaxWidth().height(panelHeight),
+                Modifier.fillMaxWidth().height(panelHeight).clipToBounds(),
                 onDragDelta = { dy ->
                     val cur = if (dragFraction >= 0f) dragFraction else vm.panelSnap.fraction
                     dragFraction = (cur + dy / totalPx).coerceIn(0f, 0.9f)
@@ -192,7 +217,9 @@ private fun PortraitBody(
                     dragFraction = -1f
                 },
             )
-            if (!showFolded || vm.settings.keepTabsInPortrait) FileTabs(vm)
+            AnimatedVisibility(!showFolded || vm.settings.keepTabsInPortrait,
+                enter = expandVertically(tween(220)) + fadeIn(tween(220)),
+                exit = shrinkVertically(tween(220)) + fadeOut(tween(160))) { FileTabs(vm) }
             EditorArea(vm, showFolded, typing, focus, Modifier.weight(1f))
         }
     }
@@ -210,47 +237,55 @@ private fun LandscapeBody(vm: IdeViewModel, showFolded: Boolean, typing: Boolean
         var dragging by remember { mutableStateOf(false) }
         var live by remember { mutableFloatStateOf(vm.panelWidthFraction) }
         LaunchedEffect(vm.panelWidthFraction) { if (!dragging) live = vm.panelWidthFraction }
+        val panelWidth by animateDpAsState(
+            if (showFolded) 0.dp else totalWidth * live,
+            if (dragging) snap() else tween(260, easing = FastOutSlowInEasing),
+            label = "panelWidth",
+        )
+        val handleWidth by animateDpAsState(
+            if (showFolded) 0.dp else MinTouch, tween(260, easing = FastOutSlowInEasing), label = "handle",
+        )
 
-        if (showFolded) {
-            // Page 11: output + file bar collapse into ONE thin line above the editor.
-            Column(Modifier.fillMaxSize()) {
-                FoldedLine(vm, compact = true, onExpand = { vm.panelSnap = PanelSnap.Normal })
-                EditorArea(vm, true, typing, focus, Modifier.weight(1f), peekTabs = true)
-            }
-            return@BoxWithConstraints
-        }
+        // One stable tree for folded and open states, so the editor (and its keyboard
+        // focus) is never recreated when the panel folds as the keyboard appears.
         Row(Modifier.fillMaxSize()) {
-            if (!showFolded) {
-                OutputPanel(vm, Modifier.width(totalWidth * live).fillMaxHeight(), vertical = false)
-                // Vertical drag handle: moves the output/editor boundary left and right.
-                Box(
-                    Modifier.width(MinTouch).fillMaxHeight().background(C.Panel)
-                        .semantics { contentDescription = "Resize output panel" }
-                        .pointerInput(totalPx) {
-                            detectHorizontalDragGestures(
-                                onDragStart = { dragging = true },
-                                onDragEnd = {
-                                    dragging = false
-                                    settleLandscape(vm, live) { live = it }
-                                },
-                                onDragCancel = {
-                                    dragging = false
-                                    settleLandscape(vm, live) { live = it }
-                                },
-                            ) { change, dx ->
-                                change.consume()
-                                live = (live + dx / totalPx).coerceIn(0.05f, 0.8f)
-                            }
-                        },
-                    contentAlignment = Alignment.Center,
-                ) {
-                    Box(Modifier.width(1.dp).fillMaxHeight().background(C.Key))
-                    Box(Modifier.size(width = 5.dp, height = 56.dp).clip(CircleShape).background(C.Muted))
-                }
+            OutputPanel(vm, Modifier.width(panelWidth).fillMaxHeight().clipToBounds(), vertical = false)
+            // Vertical drag handle: moves the output/editor boundary left and right.
+            Box(
+                Modifier.width(handleWidth).fillMaxHeight().clipToBounds().background(C.Panel)
+                    .semantics { contentDescription = "Resize output panel" }
+                    .pointerInput(totalPx) {
+                        detectHorizontalDragGestures(
+                            onDragStart = { dragging = true },
+                            onDragEnd = {
+                                dragging = false
+                                settleLandscape(vm, live) { live = it }
+                            },
+                            onDragCancel = {
+                                dragging = false
+                                settleLandscape(vm, live) { live = it }
+                            },
+                        ) { change, dx ->
+                            change.consume()
+                            live = (live + dx / totalPx).coerceIn(0.05f, 0.8f)
+                        }
+                    },
+                contentAlignment = Alignment.Center,
+            ) {
+                Box(Modifier.width(1.dp).fillMaxHeight().background(C.Key))
+                Box(Modifier.size(width = 5.dp, height = 56.dp).clip(CircleShape).background(C.Muted))
             }
             Column(Modifier.weight(1f).fillMaxHeight()) {
-                FileTabs(vm)
-                EditorArea(vm, showFolded, typing, focus, Modifier.weight(1f))
+                // Page 11: folded = ONE thin line; open = the file tab row.
+                AnimatedVisibility(showFolded, enter = expandVertically(tween(220)) + fadeIn(tween(220)),
+                    exit = shrinkVertically(tween(220)) + fadeOut(tween(160))) {
+                    FoldedLine(vm, compact = true, onExpand = { vm.panelSnap = PanelSnap.Normal })
+                }
+                AnimatedVisibility(!showFolded, enter = expandVertically(tween(220)) + fadeIn(tween(220)),
+                    exit = shrinkVertically(tween(220)) + fadeOut(tween(160))) {
+                    FileTabs(vm)
+                }
+                EditorArea(vm, showFolded, typing, focus, Modifier.weight(1f), peekTabs = true)
             }
         }
     }

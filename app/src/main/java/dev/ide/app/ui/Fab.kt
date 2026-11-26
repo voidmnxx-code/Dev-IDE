@@ -1,5 +1,18 @@
 package dev.ide.app.ui
 
+import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.core.FastOutSlowInEasing
+import androidx.compose.animation.core.animateFloatAsState
+import androidx.compose.animation.core.tween
+import androidx.compose.animation.expandVertically
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
+import androidx.compose.animation.scaleIn
+import androidx.compose.animation.scaleOut
+import androidx.compose.animation.shrinkVertically
+import androidx.compose.animation.slideInVertically
+import androidx.compose.animation.slideOutVertically
+import androidx.compose.ui.draw.rotate
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
@@ -68,12 +81,17 @@ fun BoxScope.FloatingActions(vm: IdeViewModel, typing: Boolean, containerWidthPx
 
     val onLeft = dx < -(containerWidthPx - sizePx) / 2f
 
-    if (layer != 0) {
+    AnimatedVisibility(layer != 0, enter = fadeIn(tween(180)), exit = fadeOut(tween(140))) {
         Box(Modifier.fillMaxSize().background(C.Scrim).clickable { layer = 0 })
     }
 
-    if (layer == 2) {
-        Layer2Card(vm, onBack = { layer = 1 }, onClose = { layer = 0 })
+    AnimatedVisibility(
+        layer == 2,
+        modifier = Modifier.align(Alignment.BottomCenter),
+        enter = fadeIn(tween(200)) + scaleIn(tween(240, easing = FastOutSlowInEasing), initialScale = 0.92f),
+        exit = fadeOut(tween(120)) + scaleOut(tween(140), targetScale = 0.96f),
+    ) {
+        Box(Modifier.fillMaxWidth()) { Layer2Card(vm, onBack = { layer = 1 }, onClose = { layer = 0 }) }
     }
 
     Column(
@@ -83,16 +101,30 @@ fun BoxScope.FloatingActions(vm: IdeViewModel, typing: Boolean, containerWidthPx
         horizontalAlignment = if (onLeft) Alignment.Start else Alignment.End,
         verticalArrangement = Arrangement.spacedBy(10.dp),
     ) {
-        if (layer == 1) {
-            // Most used nearest the thumb: list is rendered bottom-up.
-            vm.settings.layer1.reversed().forEach { a ->
-                Pill(a.label, primary = a == Action.Run) {
-                    if (a == Action.More) layer = 2 else { vm.perform(a); layer = 0 }
+        AnimatedVisibility(
+            layer == 1,
+            enter = fadeIn(tween(160)) + slideInVertically(tween(240, easing = FastOutSlowInEasing)) { it / 3 } +
+                expandVertically(tween(240)),
+            exit = fadeOut(tween(120)) + slideOutVertically(tween(160)) { it / 3 } + shrinkVertically(tween(160)),
+        ) {
+            Column(
+                horizontalAlignment = if (onLeft) Alignment.Start else Alignment.End,
+                verticalArrangement = Arrangement.spacedBy(10.dp),
+            ) {
+                // Most used nearest the thumb: list is rendered bottom-up.
+                vm.settings.layer1.reversed().forEach { a ->
+                    Pill(a.label, primary = a == Action.Run) {
+                        if (a == Action.More) layer = 2 else { vm.perform(a); layer = 0 }
+                    }
                 }
             }
         }
+        val rot by animateFloatAsState(if (layer == 0) 0f else 180f, tween(260, easing = FastOutSlowInEasing), label = "rot")
+        val fabAlpha by animateFloatAsState(
+            if (layer != 0) 1f else if (onLeft) 0.55f else if (typing) 0.7f else 1f, tween(200), label = "fabAlpha",
+        )
         Box(
-            Modifier.size(FabSize).alpha(if (layer != 0) 1f else if (onLeft) 0.55f else if (typing) 0.7f else 1f)
+            Modifier.size(FabSize).alpha(fabAlpha).rotate(rot)
                 .clip(CircleShape).background(C.Accent)
                 .semantics { contentDescription = "Quick actions" }
                 .pointerInput(Unit) {
@@ -112,7 +144,7 @@ fun BoxScope.FloatingActions(vm: IdeViewModel, typing: Boolean, containerWidthPx
                     onLongClick = { vm.perform(vm.settings.longPressAction) },
                 ),
             contentAlignment = Alignment.Center,
-        ) { Text(if (layer == 0) "⌃" else "⌄", color = C.Bg, fontSize = 22.sp, fontWeight = FontWeight.Bold) }
+        ) { Text("⌃", color = C.Bg, fontSize = 22.sp, fontWeight = FontWeight.Bold) }
     }
 }
 

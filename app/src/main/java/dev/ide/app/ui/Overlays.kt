@@ -187,10 +187,20 @@ fun CustomizeScreen(vm: IdeViewModel) {
                 SmallBtn("−", enabled = a != Action.More, danger = true) { l1 = l1 - a; l2 = l2 + a }
             }
         }
-        Section("LAYER 2 (tap to move up)")
-        ChipFlow(l2.map { it.label }) { idx ->
-            val a = l2[idx]
-            if (l1.size < 4) { l2 = l2 - a; l1 = l1 + a }
+        Section("LAYER 2 · ↑ move to layer 1 · − remove")
+        l2.forEachIndexed { i, a ->
+            Row(
+                Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 4.dp).clip(RoundedCornerShape(14.dp))
+                    .background(C.Bar).touchTarget().padding(horizontal = 12.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Text(a.label, color = C.Text, fontSize = 16.sp, modifier = Modifier.weight(1f))
+                SmallBtn("↑", enabled = l1.size < 4) { l2 = l2 - a; l1 = l1 + a }
+                SmallBtn("−", danger = true) {
+                    l2 = l2 - a
+                    if (a == longPress) longPress = Action.Run
+                }
+            }
         }
         Section("AVAILABLE (tap to add)")
         ChipFlow(available.map { "+ ${it.label}" }) { idx -> l2 = l2 + available[idx] }
