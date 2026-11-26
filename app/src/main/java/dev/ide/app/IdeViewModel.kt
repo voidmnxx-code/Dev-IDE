@@ -27,6 +27,7 @@ import uniffi.ide_core.CursorMove
 import uniffi.ide_core.Diagnostic
 import uniffi.ide_core.GitChange
 import uniffi.ide_core.IdeException
+import uniffi.ide_core.Language
 import uniffi.ide_core.PackageInfo
 import uniffi.ide_core.PackageManager
 import uniffi.ide_core.ProjectKind
@@ -83,7 +84,7 @@ class IdeViewModel(app: Application) : AndroidViewModel(app) {
     var terminalRefocus by mutableStateOf(0)
     var overlay by mutableStateOf<Overlay?>(null)
 
-    enum class Overlay { Files, Find, Customize, AutoFold, NewFile, Git, Packages, Preview, NewProject }
+    enum class Overlay { Files, Find, Customize, AutoFold, NewFile, Git, Packages, Preview, NewProject, Languages }
 
     // ---- output -------------------------------------------------------
     val output = mutableStateListOf<OutLine>()
@@ -283,22 +284,30 @@ class IdeViewModel(app: Application) : AndroidViewModel(app) {
         }
         saveNow()
         val file = tab.path
-        val cmd = when (file.substringAfterLast('.', "")) {
-            "js", "mjs" -> listOf("node", file)
-            "py" -> listOf("python3", file)
-            "sh" -> listOf("/system/bin/sh", file)
-            else -> null
-        }
+        val lang = try { uniffi.ide_core.languageForFile(userLanguagesJson(), file) } catch (_: IdeException) { null }
+        if (lang?.run == "@preview") { preview(); return }
+        val cmd: List<String>? = lang?.takeIf { it.run.isNotBlank() }
+            ?.let { listOf("/system/bin/sh", "-c", uniffi.ide_core.renderRun(it, file)) }
         panelSnap = PanelSnap.Normal
         outputTab = OutputTab.Output
         output.clear()
         lastRunFailed = false
-        if (cmd == null) {
-            output += OutLine("No runner for .${file.substringAfterLast('.', "")} files yet", LineKind.Error)
+        if (cmd == null || lang == null) {
+            val why = if (lang != null) "${lang.name} files cannot be run on the device (highlighting only)"
+                else "No language for .${file.substringAfterLast('.', "")} files. Add one in Languages."
+            output += OutLine(why, LineKind.Error)
             lastRunFailed = true
             return
         }
-        output += OutLine("$ ${cmd.joinToString(" ")}", LineKind.Command)
+        val miss = uniffi.ide_core.missingPackages(lang, installedPackageIds())
+        if (miss.isNotEmpty() && BuildConfig.FULL && knownPackageIds().containsAll(miss)) {
+            output += OutLine("${lang.name} needs: ${miss.joinToString(", ")}. Tap Install in Languages.", LineKind.Error)
+            lastRunFailed = true
+            refreshPackages()
+            overlay = Overlay.Languages
+            return
+        }
+        output += OutLine("$ ${lang.run.let { uniffi.ide_core.renderRun(lang, file) }}", LineKind.Command)
         viewModelScope.launch(Dispatchers.IO) {
             try {
                 val pb = ProcessBuilder(cmd).directory(root).redirectErrorStream(true)
@@ -319,6 +328,71 @@ class IdeViewModel(app: Application) : AndroidViewModel(app) {
                 lastRunFailed = true
                 output += OutLine("Error: '${cmd[0]}' is not installed yet", LineKind.Error)
             }
+        }
+    }
+
+    // ---- languages --------------------------------------------------------------
+    private val langFile = File(app.filesDir, "languages.json")
+    var langs by mutableStateOf<List<Language>>(emptyList())
+    var langStatus by mutableStateOf("")
+
+    fun userLanguagesJson(): String = try { if (langFile.exists()) langFile.readText() else "" } catch (_: java.io.IOException) { "" }
+
+    fun refreshLanguages() {
+        langs = try { uniffi.ide_core.languages(userLanguagesJson()) } catch (e: IdeException) { langStatus = err(e); emptyList() }
+        refreshPackages()
+    }
+
+    private fun installedPackageIds(): List<String> =
+        try { pm.packages().filter { it.installed }.map { it.id } } catch (_: IdeException) { emptyList() }
+
+    private fun knownPackageIds(): Set<String> =
+        try { pm.packages().map { it.id }.toSet() } catch (_: IdeException) { emptySet() }
+
+    fun missingFor(l: Language): List<String> = uniffi.ide_core.missingPackages(l, installedPackageIds())
+    fun catalogHas(ids: List<String>): Boolean = knownPackageIds().containsAll(ids)
+
+    /** Add or replace a user language, validating it in the core first. */
+    fun saveLanguage(l: Language): Boolean {
+        val arr = org.json.JSONArray()
+        try {
+            val existing = org.json.JSONArray(userLanguagesJson().ifBlank { "[]" })
+            for (i in 0 until existing.length()) {
+                val o = existing.getJSONObject(i)
+                if (o.optString("id") != l.id) arr.put(o)
+            }
+        } catch (_: org.json.JSONException) {}
+        arr.put(org.json.JSONObject().apply {
+            put("id", l.id); put("name", l.name)
+            put("extensions", org.json.JSONArray(l.extensions))
+            put("packages", org.json.JSONArray(l.packages))
+            put("run", l.run); put("lsp", l.lsp); put("comment", l.comment)
+        })
+        return try {
+            uniffi.ide_core.validateLanguages(arr.toString())
+            langFile.writeText(arr.toString())
+            langStatus = "Saved ${l.name}"
+            refreshLanguages(); true
+        } catch (e: IdeException) { langStatus = err(e); false }
+    }
+
+    fun removeLanguage(id: String) {
+        try {
+            val existing = org.json.JSONArray(userLanguagesJson().ifBlank { "[]" })
+            val arr = org.json.JSONArray()
+            for (i in 0 until existing.length()) if (existing.getJSONObject(i).optString("id") != id) arr.put(existing.getJSONObject(i))
+            langFile.writeText(arr.toString())
+        } catch (_: Exception) {}
+        refreshLanguages()
+    }
+
+    /** One tap: download and install every missing toolchain package, one after another. */
+    fun installLanguage(l: Language) {
+        val miss = missingFor(l)
+        if (miss.isEmpty() || pkgBusy != null) return
+        viewModelScope.launch(Dispatchers.IO) {
+            for (id in miss) { installOne(id); if (!pkgStatus.endsWith("installed")) break }
+            refreshLanguages()
         }
     }
 
@@ -462,7 +536,11 @@ class IdeViewModel(app: Application) : AndroidViewModel(app) {
 
     fun installPackage(id: String) {
         if (pkgBusy != null) return
-        viewModelScope.launch(Dispatchers.IO) {
+        viewModelScope.launch(Dispatchers.IO) { installOne(id) }
+    }
+
+    private fun installOne(id: String) {
+        kotlin.run {
             pkgBusy = id; pkgProgress = 0f
             try {
                 val info = pm.packages().first { it.id == id }

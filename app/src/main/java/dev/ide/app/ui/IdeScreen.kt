@@ -160,6 +160,7 @@ fun IdeScreen(vm: IdeViewModel) {
             IdeViewModel.Overlay.AutoFold -> AutoFoldScreen(vm)
             IdeViewModel.Overlay.Git -> GitScreen(vm)
             IdeViewModel.Overlay.Packages -> PackagesScreen(vm)
+            IdeViewModel.Overlay.Languages -> LanguagesScreen(vm)
             IdeViewModel.Overlay.Preview -> PreviewScreen(vm)
             IdeViewModel.Overlay.NewProject -> NewProjectScreen(vm)
             else -> Unit

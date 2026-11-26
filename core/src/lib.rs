@@ -5,6 +5,7 @@ mod buildplan;
 mod editor;
 mod git;
 mod highlight;
+mod lang;
 mod pkg;
 mod project;
 mod screen;
@@ -16,6 +17,7 @@ use editor::{Buffer, Move};
 pub use buildplan::{Diagnostic, ProjectKind, Severity};
 pub use git::{ChangeKind, CommitInfo, GitChange};
 pub use highlight::{TokenKind, TokenSpan};
+pub use lang::Language;
 use std::path::PathBuf;
 use std::sync::Mutex;
 
@@ -37,6 +39,8 @@ pub enum IdeError {
     Git(String),
     #[error("package: {0}")]
     Package(String),
+    #[error("{0}")]
+    Language(String),
 }
 
 impl From<std::io::Error> for IdeError {
@@ -793,4 +797,35 @@ mod tests {
         let sub = w.list_dir("src".into()).unwrap();
         assert_eq!(sub[0].path, "src/main.rs");
     }
+}
+
+// ---- languages ------------------------------------------------------------
+
+/// Built-in languages merged with the user's JSON array (see `lang.rs`).
+#[uniffi::export]
+pub fn languages(user_json: String) -> Result<Vec<Language>, IdeError> {
+    lang::merged(&user_json)
+}
+
+/// Validate a user language list before saving it; returns how many entries it holds.
+#[uniffi::export]
+pub fn validate_languages(user_json: String) -> Result<u32, IdeError> {
+    Ok(lang::parse_user(&user_json)?.len() as u32)
+}
+
+#[uniffi::export]
+pub fn language_for_file(user_json: String, path: String) -> Result<Option<Language>, IdeError> {
+    let all = lang::merged(&user_json)?;
+    Ok(lang::for_file(&all, &path).cloned())
+}
+
+/// Shell command line for running `path` with `language` (placeholders substituted and quoted).
+#[uniffi::export]
+pub fn render_run(language: Language, path: String) -> String {
+    lang::render(&language.run, &path)
+}
+
+#[uniffi::export]
+pub fn missing_packages(language: Language, installed: Vec<String>) -> Vec<String> {
+    lang::missing(&language, &installed)
 }

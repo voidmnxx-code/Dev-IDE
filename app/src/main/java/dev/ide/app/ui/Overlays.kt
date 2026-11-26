@@ -52,6 +52,8 @@ fun FilesDrawer(vm: IdeViewModel) {
                     modifier = Modifier.weight(1f))
                 Chip("New project") { vm.overlay = IdeViewModel.Overlay.NewProject }
                 Box(Modifier.size(6.dp))
+                Chip("Languages") { vm.refreshLanguages(); vm.overlay = IdeViewModel.Overlay.Languages }
+                Box(Modifier.size(6.dp))
                 Chip("Packages") { vm.perform(dev.ide.app.Action.Packages) }
             }
             val rows = remember(vm.version, expanded) { flatten(vm, "", 0, expanded) }
