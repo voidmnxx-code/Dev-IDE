@@ -18,19 +18,6 @@ enum class Action(val label: String) {
 class Settings(context: Context) {
     private val prefs = context.getSharedPreferences("ide_settings", Context.MODE_PRIVATE)
 
-    init {
-        // Phase 3 added Preview and Build: put them in layer 2 for users who already saved a layout.
-        if (prefs.getInt("actionsVersion", 0) < 3) {
-            if (prefs.getString("layer2", null) != null) {
-                val l1 = layer1
-                val l2 = layer2.toMutableList()
-                listOf(Action.Preview, Action.Build).forEach { if (it !in l1 && it !in l2) l2 += it }
-                layer2 = l2
-            }
-            prefs.edit().putInt("actionsVersion", 3).apply()
-        }
-    }
-
     var foldMode: FoldMode
         get() = FoldMode.valueOf(prefs.getString("foldMode", FoldMode.Always.name)!!)
         set(v) = prefs.edit().putString("foldMode", v.name).apply()
@@ -63,6 +50,19 @@ class Settings(context: Context) {
     var longPressAction: Action
         get() = Action.valueOf(prefs.getString("longPress", Action.Run.name)!!)
         set(v) = prefs.edit().putString("longPress", v.name).apply()
+
+    init {
+        // Phase 3 added Preview and Build: put them in layer 2 for users who already saved a layout.
+        if (prefs.getInt("actionsVersion", 0) < 3) {
+            if (prefs.getString("layer2", null) != null) {
+                val l1 = layer1
+                val l2 = layer2.toMutableList()
+                listOf(Action.Preview, Action.Build).forEach { if (it !in l1 && it !in l2) l2 += it }
+                layer2 = l2
+            }
+            prefs.edit().putInt("actionsVersion", 3).apply()
+        }
+    }
 
     private fun flag(key: String) = object : kotlin.properties.ReadWriteProperty<Any?, Boolean> {
         override fun getValue(thisRef: Any?, property: kotlin.reflect.KProperty<*>) =
